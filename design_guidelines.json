@@ -1,0 +1,94 @@
+{
+  "theme": "dark",
+  "archetype": "Archetype 4: Swiss & High-Contrast (Dark Mode Variant)",
+  "design_philosophy": "Objective, rigid, and functional. Expose the skeleton of the UI using the 'Grid Borders / Technical Look' micro-theme. Use high-contrast accents sparingly to denote status (Pass/Fail/Warn), keeping the rest of the UI monochrome to reduce cognitive load during developer sessions. Avoid soft shadows; rely on 1px solid borders and high-contrast typography.",
+  "typography": {
+    "fonts": {
+      "heading": "Chivo",
+      "body": "IBM Plex Sans",
+      "monospace": "JetBrains Mono"
+    },
+    "rules": {
+      "h1": "text-4xl sm:text-5xl font-black tracking-tighter",
+      "h2": "text-2xl sm:text-3xl font-bold tracking-tight",
+      "h3": "text-xl font-bold tracking-tight",
+      "body": "text-base leading-relaxed text-zinc-300",
+      "small": "text-sm text-zinc-400",
+      "label": "text-xs font-bold uppercase tracking-[0.2em] text-zinc-500",
+      "code": "font-mono text-sm tracking-tight"
+    }
+  },
+  "colors": {
+    "background": {
+      "base": "#0A0A0A",
+      "surface": "#121214",
+      "surface_hover": "#1C1C1F"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A"
+    },
+    "border": {
+      "default": "rgba(255, 255, 255, 0.08)",
+      "focus": "rgba(255, 255, 255, 0.2)"
+    },
+    "accents": {
+      "primary": "#FFFFFF",
+      "primary_text": "#000000",
+      "info": "#007AFF",
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "error": "#EF4444"
+    }
+  },
+  "spacing_and_layout": {
+    "philosophy": "Dense and compact for data, generous padding for containers. Mobile-first grid.",
+    "container_padding": "p-6 md:p-8",
+    "grid_gap": "gap-4 md:gap-6",
+    "border_radius": "rounded-sm",
+    "layout_patterns": [
+      "MODE B: THE 'CONTROL ROOM' GRID for the Dashboard (grid-cols-1 md:grid-cols-3 lg:grid-cols-4)",
+      "GRID BORDERS: Containers use border-collapse style layouts with visible 1px borders dividing items.",
+      "Centered minimal card for Login view, utilizing raw grid background pattern via CSS."
+    ]
+  },
+  "components": {
+    "buttons": "Flat design, 1px border. Hover state MUST explicitly change background and text color. Focus state MUST have 2px offset ring.",
+    "cards": "Solid background (#121214) with 1px border (border-white/10). No soft shadows. Sharp or 2px max border radius.",
+    "navigation": "Sticky top bar with glassmorphism (bg-black/60 backdrop-blur-xl border-b border-white/10). Z-index 50.",
+    "status_badges": "High-contrast text on very dark tinted backgrounds (e.g., text-emerald-400 bg-emerald-400/10 border border-emerald-400/20).",
+    "tables": "Dense. 1px border on bottom of rows. Monospace font for commit hashes, times, and IDs.",
+    "terminal_log": "Retro-Futurism 'Terminal' look. Background #050505. Border border-white/10. Monospace font. Subtle green or white text for logs."
+  },
+  "animations": {
+    "hover": "Fast transitions (150ms ease). Target transform and background-color.",
+    "loading": "Use ASCII or raw monospace loading spinners (e.g., [ / ], [ - ], [ \\ ]) instead of smooth circles, or a highly rigid segmented progress bar.",
+    "progress_bar": "Segmented or glowing line (The 'Tracing Beam' style) for the Live Run state."
+  },
+  "icons_and_media": {
+    "icon_library": "lucide-react (primary) and react-icons (for GitHub logo)",
+    "rules": "Icons should be sized consistently (w-4 h-4 for inline, w-5 h-5 for actions). Stroke width 1.5 for a technical look.",
+    "image_urls": {
+      "login_background": {
+        "url": "none",
+        "description": "Use CSS-only abstract grid background instead of an image. Example: radial-gradient(circle at center, transparent 0%, #0A0A0A 100%), linear-gradient(to right, rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.03) 1px, transparent 1px) with background-size of 24px 24px.",
+        "category": "background"
+      }
+    }
+  },
+  "accessibility_and_testing": {
+    "contrast": "Ensure all text, especially in terminal logs and badges, meets WCAG AA 4.5:1.",
+    "testing": "All interactive elements MUST include a data-testid attribute formatted as kebab-case and role-based (e.g., 'github-login-button', 'repo-select-card', 'live-run-button')."
+  },
+  "instructions_to_main_agent": [
+    "Install required fonts from Google Fonts: Chivo, IBM Plex Sans, JetBrains Mono.",
+    "Install 'lucide-react' and 'react-icons' for the GitHub logo.",
+    "Configure Tailwind with the exact color variables provided in the design guidelines.",
+    "Do NOT use soft drop shadows (shadow-md, shadow-lg). Instead, use flat UI with 1px borders (border-white/10) to separate elements.",
+    "For the login page background, implement the CSS grid pattern as described in 'login_background' description.",
+    "The Dashboard View must follow the 'CONTROL ROOM' grid layout logic.",
+    "For the Live Run log area, strictly use the JetBrains Mono font, a #050505 background, and ensure new log entries scroll into view automatically.",
+    "Use .jsx or .js extension for React files as requested by the user, NOT .tsx."
+  ]
+}
