@@ -26,7 +26,10 @@ export default function TopBar({ user, onLogout }) {
             AI Test Lab
           </span>
           <span className="text-[10px] font-mono text-zinc-600 ml-1 hidden sm:inline">
-            v1.0
+            v1.1
+          </span>
+          <span className="text-[10px] text-zinc-500 hidden lg:inline">
+            analyze • fix • test • draft PR
           </span>
         </div>
 

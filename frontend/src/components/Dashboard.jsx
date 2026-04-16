@@ -3,6 +3,7 @@ import axios from "axios";
 import TopBar from "@/components/TopBar";
 import RepoSelector from "@/components/RepoSelector";
 import StatsBar from "@/components/StatsBar";
+import CapabilityPanel from "@/components/CapabilityPanel";
 import LiveRunPanel from "@/components/LiveRunPanel";
 import RunHistory from "@/components/RunHistory";
 import ReportDetail from "@/components/ReportDetail";
@@ -10,7 +11,7 @@ import ReportDetail from "@/components/ReportDetail";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-export default function Dashboard({ user, onLogout }) {
+export default function Dashboard({ user, onLogout, onSessionExpired }) {
   const [repos, setRepos] = useState([]);
   const [selectedRepo, setSelectedRepo] = useState(null);
   const [stats, setStats] = useState({ total_runs: 0, passed: 0, failed: 0, warnings: 0, running: 0 });
@@ -19,15 +20,26 @@ export default function Dashboard({ user, onLogout }) {
   const [isRunning, setIsRunning] = useState(false);
   const [currentRunId, setCurrentRunId] = useState(null);
   const [logMessages, setLogMessages] = useState([]);
+  const [isCreatingPullRequest, setIsCreatingPullRequest] = useState(false);
+  const [isChatting, setIsChatting] = useState(false);
+
+  const handleUnauthorized = useCallback((err) => {
+    if (axios.isAxiosError(err) && err.response?.status === 401) {
+      onSessionExpired?.();
+      return true;
+    }
+    return false;
+  }, [onSessionExpired]);
 
   const fetchRepos = useCallback(async () => {
     try {
       const res = await axios.get(`${API}/repos`);
       setRepos(res.data);
     } catch (err) {
+      if (handleUnauthorized(err)) return;
       console.error("Failed to fetch repos:", err);
     }
-  }, []);
+  }, [handleUnauthorized]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -61,6 +73,9 @@ export default function Dashboard({ user, onLogout }) {
         const res = await axios.get(`${API}/reports/${currentRunId}`);
         const report = res.data;
         setLogMessages(report.log_messages || []);
+        if (activeReport?.id === report.id) {
+          setActiveReport(report);
+        }
 
         if (report.status !== "queued" && report.status !== "running") {
           setIsRunning(false);
@@ -69,11 +84,12 @@ export default function Dashboard({ user, onLogout }) {
           fetchReports();
         }
       } catch (err) {
+        if (handleUnauthorized(err)) return;
         console.error("Polling error:", err);
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [currentRunId, isRunning, fetchStats, fetchReports]);
+  }, [activeReport, currentRunId, handleUnauthorized, isRunning, fetchStats, fetchReports]);
 
   const handleRunAnalysis = useCallback(async () => {
     if (!selectedRepo || isRunning) return;
@@ -88,20 +104,63 @@ export default function Dashboard({ user, onLogout }) {
       });
       setCurrentRunId(res.data.run_id);
     } catch (err) {
+      if (handleUnauthorized(err)) {
+        setIsRunning(false);
+        return;
+      }
       console.error("Run failed:", err);
       setIsRunning(false);
       setLogMessages(prev => [...prev, `Error: ${err.message}`]);
     }
-  }, [selectedRepo, isRunning]);
+  }, [selectedRepo, isRunning, handleUnauthorized]);
 
   const handleViewReport = useCallback(async (runId) => {
     try {
       const res = await axios.get(`${API}/reports/${runId}`);
       setActiveReport(res.data);
     } catch (err) {
+      if (handleUnauthorized(err)) return;
       console.error("Failed to fetch report:", err);
     }
-  }, []);
+  }, [handleUnauthorized]);
+
+  const handleCreatePullRequest = useCallback(async (runId) => {
+    setIsCreatingPullRequest(true);
+    try {
+      const res = await axios.post(`${API}/reports/${runId}/pull-request`);
+      const refreshed = await axios.get(`${API}/reports/${runId}`);
+      setActiveReport(refreshed.data);
+      fetchReports();
+      if (res.data?.url) {
+        window.open(res.data.url, "_blank", "noopener,noreferrer");
+      }
+    } catch (err) {
+      if (handleUnauthorized(err)) return;
+      console.error("Failed to create pull request:", err);
+    } finally {
+      setIsCreatingPullRequest(false);
+    }
+  }, [fetchReports, handleUnauthorized]);
+
+  const handleReportChat = useCallback(async (runId, message) => {
+    setIsChatting(true);
+    try {
+      const res = await axios.post(`${API}/reports/${runId}/chat`, { message });
+      setActiveReport(res.data.report);
+      fetchReports();
+      return res.data.report;
+    } catch (err) {
+      if (handleUnauthorized(err)) return null;
+      console.error("Failed to send chat message:", err);
+      return null;
+    } finally {
+      setIsChatting(false);
+    }
+  }, [fetchReports, handleUnauthorized]);
+
+  const latestSelectedReport = selectedRepo
+    ? reports.find((report) => report.repo_full_name === selectedRepo.full_name)
+    : reports[0] || null;
 
   return (
     <div className="min-h-screen" style={{ background: "#0A0A0A" }}>
@@ -122,6 +181,10 @@ export default function Dashboard({ user, onLogout }) {
 
           {/* Right column: Run + History */}
           <div className="lg:col-span-2 space-y-6">
+            <CapabilityPanel
+              selectedRepo={selectedRepo}
+              latestReport={latestSelectedReport}
+            />
             <LiveRunPanel
               selectedRepo={selectedRepo}
               isRunning={isRunning}
@@ -139,6 +202,10 @@ export default function Dashboard({ user, onLogout }) {
       {activeReport && (
         <ReportDetail
           report={activeReport}
+          isCreatingPullRequest={isCreatingPullRequest}
+          isChatting={isChatting}
+          onCreatePullRequest={handleCreatePullRequest}
+          onSendChat={handleReportChat}
           onClose={() => setActiveReport(null)}
         />
       )}
