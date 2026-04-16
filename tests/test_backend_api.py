@@ -210,3 +210,87 @@ def test_arbitrary_repo_can_become_pr_ready_with_model_generated_fix(monkeypatch
     assert payload["success"] is True
     assert payload["status"] == "draft_opened"
     assert payload["url"].startswith("https://github.com/devuser/custom-api/pull/")
+
+
+def test_report_chat_can_explain_and_update_fix_pack(monkeypatch):
+    login_mock_user()
+
+    response = client.post(
+        "/api/analysis/run",
+        json={
+            "repo_full_name": "devuser/custom-api",
+            "repo_name": "custom-api",
+            "branch": "main",
+            "commit_sha": "chat123",
+            "code_snippet": (
+                "# ---- FILE: src/handler.py ----\n"
+                "def handle(raw_value):\n"
+                "    return eval(raw_value)\n"
+            ),
+        },
+    )
+    assert response.status_code == 200
+    run_id = response.json()["run_id"]
+
+    async def fake_chat_response(report, files, message, chat_history):
+        assert report["id"] == run_id
+        assert message == "Modify the patch to remove eval and add tests."
+        assert isinstance(files, list)
+        assert chat_history == []
+        return {
+            "reply": "I replaced eval with integer parsing and expanded the regression tests.",
+            "apply_changes": True,
+            "engineer_summary": "AI chat converted the preview into a concrete safe patch.",
+            "suggested_fixes": [
+                {
+                    "file_path": "src/handler.py",
+                    "title": "Replace eval with explicit parsing",
+                    "summary": "Parse integers directly instead of executing arbitrary strings.",
+                    "explanation": "This removes remote code execution risk while preserving numeric behavior.",
+                    "language": "python",
+                    "updated_code": (
+                        "def parse_number(raw_value):\n"
+                        "    return int(raw_value)\n\n"
+                        "def handle(raw_value):\n"
+                        "    return parse_number(raw_value)\n"
+                    ),
+                    "patch": "--- a/src/handler.py\n+++ b/src/handler.py",
+                }
+            ],
+            "custom_tests": [
+                {
+                    "file_path": "tests/test_handler.py",
+                    "title": "Regression tests for parser-based handler",
+                    "framework": "pytest",
+                    "purpose": "Checks the handler parses safe numeric input.",
+                    "command": "pytest tests/test_handler.py",
+                    "code": (
+                        "from src.handler import handle\n\n"
+                        "def test_handle_parses_number_strings():\n"
+                        "    assert handle('9') == 9\n"
+                    ),
+                }
+            ],
+            "pr_title": "fix: remove eval from handler",
+            "pr_body": "Updated by AI chat.",
+        }
+
+    monkeypatch.setattr(server, "generate_report_chat_response", fake_chat_response)
+
+    response = client.post(
+        f"/api/reports/{run_id}/chat",
+        json={"message": "Modify the patch to remove eval and add tests."},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["reply"] == "I replaced eval with integer parsing and expanded the regression tests."
+
+    report = payload["report"]
+    assert report["engineer_summary"] == "AI chat converted the preview into a concrete safe patch."
+    assert report["pr_draft"]["can_create"] is True
+    assert report["pr_draft"]["title"] == "fix: remove eval from handler"
+    assert report["pr_draft"]["body"] == "Updated by AI chat."
+    assert report["suggested_fixes"][0]["file_path"] == "src/handler.py"
+    assert report["custom_tests"][0]["file_path"] == "tests/test_handler.py"
+    assert report["chat_history"][0]["role"] == "user"
+    assert report["chat_history"][1]["role"] == "assistant"

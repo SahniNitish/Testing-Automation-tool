@@ -21,6 +21,7 @@ export default function Dashboard({ user, onLogout, onSessionExpired }) {
   const [currentRunId, setCurrentRunId] = useState(null);
   const [logMessages, setLogMessages] = useState([]);
   const [isCreatingPullRequest, setIsCreatingPullRequest] = useState(false);
+  const [isChatting, setIsChatting] = useState(false);
 
   const handleUnauthorized = useCallback((err) => {
     if (axios.isAxiosError(err) && err.response?.status === 401) {
@@ -141,6 +142,22 @@ export default function Dashboard({ user, onLogout, onSessionExpired }) {
     }
   }, [fetchReports, handleUnauthorized]);
 
+  const handleReportChat = useCallback(async (runId, message) => {
+    setIsChatting(true);
+    try {
+      const res = await axios.post(`${API}/reports/${runId}/chat`, { message });
+      setActiveReport(res.data.report);
+      fetchReports();
+      return res.data.report;
+    } catch (err) {
+      if (handleUnauthorized(err)) return null;
+      console.error("Failed to send chat message:", err);
+      return null;
+    } finally {
+      setIsChatting(false);
+    }
+  }, [fetchReports, handleUnauthorized]);
+
   const latestSelectedReport = selectedRepo
     ? reports.find((report) => report.repo_full_name === selectedRepo.full_name)
     : reports[0] || null;
@@ -186,7 +203,9 @@ export default function Dashboard({ user, onLogout, onSessionExpired }) {
         <ReportDetail
           report={activeReport}
           isCreatingPullRequest={isCreatingPullRequest}
+          isChatting={isChatting}
           onCreatePullRequest={handleCreatePullRequest}
+          onSendChat={handleReportChat}
           onClose={() => setActiveReport(null)}
         />
       )}

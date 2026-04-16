@@ -174,6 +174,10 @@ class AnalysisRequest(BaseModel):
     commit_sha: Optional[str] = None
     code_snippet: Optional[str] = None
 
+
+class ReportChatRequest(BaseModel):
+    message: str
+
 class TestResult(BaseModel):
     test_type: str
     status: str  # passed, warning, failed
@@ -197,6 +201,7 @@ class AnalysisReport(BaseModel):
     suggested_fixes: List[dict] = Field(default_factory=list)
     custom_tests: List[dict] = Field(default_factory=list)
     pr_draft: Dict[str, Any] = Field(default_factory=dict)
+    chat_history: List[dict] = Field(default_factory=list)
 
 
 def github_oauth_configured() -> bool:
@@ -1558,6 +1563,219 @@ def build_engineer_summary(findings: List[Dict[str, str]], fixes: List[Dict[str,
     )
 
 
+def build_pr_draft_payload(
+    run_id: str,
+    repo_name: str,
+    branch: str,
+    repo_full_name: str,
+    findings: List[Dict[str, str]],
+    fixes: List[Dict[str, str]],
+    custom_tests: List[Dict[str, str]],
+    existing_pr_draft: Optional[Dict[str, Any]] = None,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+) -> Dict[str, Any]:
+    existing_pr_draft = existing_pr_draft or {}
+    pr_ready = any(fix.get("updated_code") for fix in fixes)
+    pr_title_suffix = findings[0]["title"] if findings else "harden core paths"
+
+    return {
+        "title": title or existing_pr_draft.get("title") or f"fix: {pr_title_suffix[:67].lower()}",
+        "body": body or existing_pr_draft.get("body") or build_pr_body(repo_full_name, branch, findings, fixes, custom_tests),
+        "branch_name": existing_pr_draft.get("branch_name") or build_branch_name(repo_name, run_id),
+        "base_branch": existing_pr_draft.get("base_branch") or branch,
+        "can_create": pr_ready,
+        "created": existing_pr_draft.get("created", False),
+        "status": existing_pr_draft.get("status") if existing_pr_draft.get("created") else ("ready" if pr_ready else "preview_only"),
+        "url": existing_pr_draft.get("url"),
+        "number": existing_pr_draft.get("number"),
+        "preview_only_reason": None if pr_ready else "The fallback analyzer prepared a review plan, but it needs a model-backed patch before opening a safe PR.",
+    }
+
+
+def build_report_chat_fallback(report: Dict[str, Any], message: str) -> Dict[str, Any]:
+    lower = message.lower()
+    findings = report.get("findings", [])
+    fixes = report.get("suggested_fixes", [])
+    tests = report.get("custom_tests", [])
+    top = findings[0] if findings else None
+
+    if any(word in lower for word in ["where", "problem", "wrong", "issue", "bug"]):
+        if top:
+            reply = (
+                f"The main issue in this report is '{top['title']}' in {top['file_path']}. "
+                f"{top['explanation']} Recommended next step: {top['recommendation']}"
+            )
+        else:
+            reply = "I do not see a concrete finding in this report yet. Run analysis first and I can walk through the result."
+    elif any(word in lower for word in ["modify", "change", "rewrite", "update", "improve", "patch", "test"]):
+        reply = (
+            "I can update the proposed fix and tests, but the model-backed chat path was unavailable for this request. "
+            "Try again after the backend AI service is available."
+        )
+    else:
+        reply = (
+            f"This run has {len(findings)} finding(s), {len(fixes)} fix pack(s), and {len(tests)} custom test file(s). "
+            "Ask me where the problem is, why the fix was suggested, or how you want the patch changed."
+        )
+
+    return {
+        "reply": reply,
+        "apply_changes": False,
+        "engineer_summary": None,
+        "suggested_fixes": None,
+        "custom_tests": None,
+        "pr_title": None,
+        "pr_body": None,
+    }
+
+
+def trim_chat_history(history: List[Dict[str, str]], limit: int = 12) -> List[Dict[str, str]]:
+    return history[-limit:]
+
+
+async def load_report_code(session: Dict[str, Any], report: Dict[str, Any]) -> str:
+    if session.get("is_mock"):
+        return MOCK_CODE_SNIPPETS.get(report.get("repo_name", "default"), MOCK_CODE_SNIPPETS["default"])
+
+    access_token = session.get("github_access_token")
+    if not access_token:
+        raise HTTPException(status_code=401, detail="GitHub access token missing")
+
+    code = await fetch_repo_code(access_token, report["repo_full_name"], report.get("branch", "main"))
+    if not code:
+        raise HTTPException(status_code=502, detail="Unable to fetch repository source for AI chat")
+    return code
+
+
+async def generate_report_chat_response(
+    report: Dict[str, Any],
+    files: List[Dict[str, str]],
+    message: str,
+    chat_history: List[Dict[str, str]],
+) -> Dict[str, Any]:
+    fallback = build_report_chat_fallback(report, message)
+    if not ZAI_API_KEY or not files:
+        return fallback
+
+    focus_files = select_focus_files(files, report.get("findings", []), limit=4, max_chars=50_000)
+    if not focus_files:
+        return fallback
+
+    file_lookup = {file_info["path"]: file_info for file_info in files}
+    report_snapshot = {
+        "repo_full_name": report.get("repo_full_name"),
+        "branch": report.get("branch"),
+        "status": report.get("status"),
+        "engineer_summary": report.get("engineer_summary"),
+        "findings": report.get("findings", []),
+        "suggested_fixes": [
+            {
+                "file_path": item.get("file_path"),
+                "title": item.get("title"),
+                "summary": item.get("summary"),
+                "explanation": item.get("explanation"),
+                "has_updated_code": bool(item.get("updated_code")),
+                "updated_code": item.get("updated_code", "")[:12_000],
+            }
+            for item in report.get("suggested_fixes", [])[:3]
+        ],
+        "custom_tests": report.get("custom_tests", [])[:3],
+        "pr_draft": report.get("pr_draft", {}),
+    }
+    history_payload = chat_history[-6:]
+    files_payload = "\n\n".join(
+        (
+            f"PATH: {file_info['path']}\n"
+            f"LANGUAGE: {file_info['language']}\n"
+            "CONTENT:\n"
+            f"{file_info['content']}"
+        )
+        for file_info in focus_files
+    )
+
+    system_prompt = (
+        "You are an interactive AI code engineer embedded inside a pull-request assistant. "
+        "Answer questions clearly and, when the user asks for modifications, update the proposed patch and tests safely. "
+        "Return valid JSON only and do not wrap it in markdown."
+    )
+    user_prompt = (
+        f"Current report snapshot:\n{json.dumps(report_snapshot, indent=2)}\n\n"
+        f"Recent chat history:\n{json.dumps(history_payload, indent=2)}\n\n"
+        f"Candidate source files:\n{files_payload}\n\n"
+        f"User request:\n{message}\n\n"
+        "Return JSON with this schema:\n"
+        "{\n"
+        '  "reply": "assistant reply for the chat UI",\n'
+        '  "apply_changes": true,\n'
+        '  "engineer_summary": "optional updated summary",\n'
+        '  "pr_title": "optional updated draft PR title",\n'
+        '  "pr_body": "optional updated draft PR body",\n'
+        '  "fixes": [\n'
+        "    {\n"
+        '      "file_path": "existing source file path",\n'
+        '      "title": "short title",\n'
+        '      "summary": "what changed",\n'
+        '      "explanation": "why the change helps",\n'
+        '      "updated_code": "complete replacement file contents"\n'
+        "    }\n"
+        "  ],\n"
+        '  "tests": [\n'
+        "    {\n"
+        '      "file_path": "test file path",\n'
+        '      "title": "short test title",\n'
+        '      "framework": "pytest/jest/go test/etc",\n'
+        '      "purpose": "what the test covers",\n'
+        '      "command": "how to run it",\n'
+        '      "code": "complete test file contents"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- If the user only asks a question, set apply_changes to false.\n"
+        "- If the user asks to modify the fix or tests, set apply_changes to true and return updated files.\n"
+        "- Only use file paths from the provided source files for fixes.\n"
+        "- Preserve existing behavior outside the requested change.\n"
+        "- If you cannot safely modify the code, keep fixes empty and explain why in reply.\n"
+    )
+
+    try:
+        import openai
+
+        client = openai.AsyncOpenAI(api_key=ZAI_API_KEY, base_url=ZAI_BASE_URL)
+        completion = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=ZAI_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            ),
+            timeout=90,
+        )
+        content = completion.choices[0].message.content or ""
+        payload = extract_json_object(content)
+        if not payload:
+            return fallback
+
+        normalized_fixes = normalize_model_generated_fixes(payload.get("fixes", []), file_lookup)
+        normalized_tests = normalize_model_generated_tests(payload.get("tests", []))
+        apply_changes = bool(payload.get("apply_changes")) and bool(normalized_fixes or normalized_tests or payload.get("pr_title") or payload.get("pr_body"))
+
+        return {
+            "reply": str(payload.get("reply") or fallback["reply"]).strip(),
+            "apply_changes": apply_changes,
+            "engineer_summary": str(payload.get("engineer_summary") or "").strip() or None,
+            "suggested_fixes": normalized_fixes or None,
+            "custom_tests": normalized_tests or None,
+            "pr_title": str(payload.get("pr_title") or "").strip() or None,
+            "pr_body": str(payload.get("pr_body") or "").strip() or None,
+        }
+    except Exception as exc:
+        logger.warning("Report chat generation failed for %s: %s", report.get("repo_full_name"), exc)
+        return fallback
+
+
 async def build_engineer_report(
     run_id: str,
     repo_full_name: str,
@@ -1586,20 +1804,15 @@ async def build_engineer_report(
                 custom_tests = model_pack["custom_tests"]
             engineer_summary = model_pack.get("engineer_summary", "")
 
-    pr_ready = any(fix.get("updated_code") for fix in fixes)
-
-    pr_title_suffix = findings[0]["title"] if findings else "harden core paths"
-    pr_draft = {
-        "title": f"fix: {pr_title_suffix[:67].lower()}",
-        "body": build_pr_body(repo_full_name, branch, findings, fixes, custom_tests),
-        "branch_name": build_branch_name(repo_name, run_id),
-        "base_branch": branch,
-        "can_create": pr_ready,
-        "created": False,
-        "status": "ready" if pr_ready else "preview_only",
-        "url": None,
-        "preview_only_reason": None if pr_ready else "The fallback analyzer prepared a review plan, but it needs a model-backed patch before opening a safe PR.",
-    }
+    pr_draft = build_pr_draft_payload(
+        run_id=run_id,
+        repo_name=repo_name,
+        branch=branch,
+        repo_full_name=repo_full_name,
+        findings=findings,
+        fixes=fixes,
+        custom_tests=custom_tests,
+    )
 
     return {
         "engineer_summary": engineer_summary or build_engineer_summary(findings, fixes, custom_tests),
@@ -2154,6 +2367,7 @@ async def run_analysis(req: AnalysisRequest, request: Request, background_tasks:
         "suggested_fixes": [],
         "custom_tests": [],
         "pr_draft": {},
+        "chat_history": [],
     }
     await db.reports.insert_one({**report})
 
@@ -2162,6 +2376,61 @@ async def run_analysis(req: AnalysisRequest, request: Request, background_tasks:
     )
 
     return {"run_id": run_id, "status": "queued"}
+
+
+@api_router.post("/reports/{run_id}/chat")
+async def chat_with_report(run_id: str, req: ReportChatRequest, request: Request):
+    session = get_session(request)
+    report = await db.reports.find_one({"id": run_id}, {"_id": 0})
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    code = await load_report_code(session, report)
+    files = parse_code_files(code, report.get("repo_name", "default"))
+    chat_result = await generate_report_chat_response(report, files, message, report.get("chat_history", []))
+
+    chat_history = trim_chat_history(
+        [
+            *report.get("chat_history", []),
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": chat_result["reply"]},
+        ]
+    )
+
+    updated_fields: Dict[str, Any] = {"chat_history": chat_history}
+    if chat_result.get("engineer_summary"):
+        updated_fields["engineer_summary"] = chat_result["engineer_summary"]
+
+    if chat_result.get("apply_changes"):
+        fixes = chat_result.get("suggested_fixes") or report.get("suggested_fixes", [])
+        custom_tests = chat_result.get("custom_tests") or report.get("custom_tests", [])
+        pr_draft = build_pr_draft_payload(
+            run_id=run_id,
+            repo_name=report.get("repo_name", "repo"),
+            branch=report.get("branch", "main"),
+            repo_full_name=report.get("repo_full_name", ""),
+            findings=report.get("findings", []),
+            fixes=fixes,
+            custom_tests=custom_tests,
+            existing_pr_draft=report.get("pr_draft", {}),
+            title=chat_result.get("pr_title"),
+            body=chat_result.get("pr_body"),
+        )
+        updated_fields["suggested_fixes"] = fixes
+        updated_fields["custom_tests"] = custom_tests
+        updated_fields["pr_draft"] = pr_draft
+
+    await db.reports.update_one({"id": run_id}, {"$set": updated_fields})
+    refreshed_report = await db.reports.find_one({"id": run_id}, {"_id": 0})
+
+    return {
+        "reply": chat_result["reply"],
+        "report": refreshed_report,
+    }
 
 
 @api_router.post("/reports/{run_id}/pull-request")

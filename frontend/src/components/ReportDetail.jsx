@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Loader2,
 } from "lucide-react";
+import AIChatPanel from "@/components/AIChatPanel";
 
 const TEST_ICONS = {
   unit_tests: TestTube2,
@@ -41,6 +42,8 @@ export default function ReportDetail({
   onClose,
   onCreatePullRequest,
   isCreatingPullRequest,
+  onSendChat,
+  isChatting,
 }) {
   if (!report) return null;
 
@@ -189,8 +192,51 @@ export default function ReportDetail({
                   </button>
                 )}
               </div>
+
+          {(prDraft.title || prDraft.body) ? (
+                <div className="mt-4 border border-white/[0.06] rounded-sm overflow-hidden">
+                  <div className="px-3 py-2 border-b border-white/[0.06] bg-black/20">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
+                      Draft PR Preview
+                    </div>
+                  </div>
+
+                  <div className="p-3 space-y-3">
+                    {prDraft.title ? (
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500 mb-1">
+                          Title
+                        </div>
+                        <div className="text-sm font-semibold text-zinc-100 break-words">
+                          {prDraft.title}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {prDraft.body ? (
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500 mb-1">
+                          Body
+                        </div>
+                        <pre
+                          className="p-3 rounded-sm text-[11px] text-zinc-300 font-mono whitespace-pre-wrap overflow-x-auto max-h-72 overflow-y-auto leading-relaxed"
+                          style={{ background: "#050505" }}
+                        >
+                          {prDraft.body}
+                        </pre>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
+
+          <AIChatPanel
+            report={report}
+            isChatting={isChatting}
+            onSendChat={onSendChat}
+          />
 
           <div>
             <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-500 mb-4">
