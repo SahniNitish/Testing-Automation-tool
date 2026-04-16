@@ -89,9 +89,20 @@ export default function RunHistory({ reports, onViewReport }) {
                       </div>
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-sm text-zinc-300">
-                        {report.repo_name}
-                      </span>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-sm text-zinc-300">
+                          {report.repo_name}
+                        </span>
+                        {report.pr_draft?.created ? (
+                          <span className="text-[10px] font-medium text-emerald-300">
+                            draft PR opened
+                          </span>
+                        ) : report.pr_draft?.can_create ? (
+                          <span className="text-[10px] font-medium text-sky-300">
+                            PR-ready fix pack
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-4 py-3 hidden sm:table-cell">
                       <span className="text-xs text-zinc-500 font-mono">

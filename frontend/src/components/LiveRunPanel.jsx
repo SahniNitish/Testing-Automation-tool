@@ -14,7 +14,7 @@ export default function LiveRunPanel({ selectedRepo, isRunning, logMessages, onR
     <div>
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-500">
-          Analysis Runner
+          AI Engineer Runner
         </h3>
         {isRunning && (
           <span className="flex items-center gap-1.5 text-[11px] text-[#007AFF] font-mono">
@@ -27,6 +27,17 @@ export default function LiveRunPanel({ selectedRepo, isRunning, logMessages, onR
       <div className="bg-[#121214] border border-white/[0.06] rounded-sm overflow-hidden">
         {/* Run button area */}
         <div className="p-4 border-b border-white/[0.06]">
+          <div className="flex flex-wrap gap-2 mb-3">
+            {["Find issues", "Explain fixes", "Write tests", "Draft PR"].map((label) => (
+              <span
+                key={label}
+                className="text-[10px] uppercase tracking-[0.18em] text-zinc-400 border border-white/10 rounded-sm px-2 py-1 bg-black/20"
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+
           <button
             data-testid="live-run-button"
             onClick={onRun}
@@ -48,7 +59,7 @@ export default function LiveRunPanel({ selectedRepo, isRunning, logMessages, onR
               <>
                 <Play className="w-4 h-4" strokeWidth={2} />
                 {selectedRepo
-                  ? `Run AI analysis on ${selectedRepo.name}`
+                  ? `Run AI engineer on ${selectedRepo.name}`
                   : "Select a repository first"}
               </>
             )}
@@ -72,7 +83,7 @@ export default function LiveRunPanel({ selectedRepo, isRunning, logMessages, onR
           {logMessages.length === 0 ? (
             <div className="flex items-center h-full justify-center">
               <span className="text-xs text-zinc-600 font-mono">
-                // awaiting analysis run
+                // waiting for the next AI engineer run
               </span>
             </div>
           ) : (

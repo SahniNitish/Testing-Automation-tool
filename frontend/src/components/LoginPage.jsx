@@ -3,15 +3,16 @@ import { FlaskConical, GitBranch, Code2, BarChart3 } from "lucide-react";
 
 const steps = [
   { icon: VscGithub, label: "Connect", desc: "Link your GitHub account" },
-  { icon: GitBranch, label: "Select", desc: "Choose a repository" },
-  { icon: Code2, label: "Push", desc: "Push code or open a PR" },
-  { icon: BarChart3, label: "Results", desc: "Get AI-powered test reports" },
+  { icon: GitBranch, label: "Analyze", desc: "Inspect the selected branch" },
+  { icon: Code2, label: "Fix", desc: "Generate code patches and explain them" },
+  { icon: BarChart3, label: "Ship", desc: "Create tests and open a draft PR" },
 ];
 
 const ERROR_MESSAGES = {
   invalid_callback: "GitHub sent an invalid callback. Try signing in again.",
   missing_access_token: "GitHub did not return an access token.",
   github_oauth_failed: "GitHub sign-in failed. Check your backend OAuth settings.",
+  session_expired: "Your GitHub session expired, likely because the backend restarted. Sign in again to create the PR.",
 };
 
 export default function LoginPage({ onLogin, authError }) {
@@ -35,7 +36,7 @@ export default function LoginPage({ onLogin, authError }) {
             AI Test Lab
           </h1>
           <p className="mt-3 text-base text-zinc-400 leading-relaxed max-w-xs mx-auto">
-            AI-powered testing on every push. Catch bugs before they ship.
+            Analyze code, explain fixes, generate regression tests, and draft pull requests from one workflow.
           </p>
         </div>
 
@@ -93,7 +94,7 @@ export default function LoginPage({ onLogin, authError }) {
         </div>
 
         <p className="text-center text-[11px] text-zinc-600 mt-6 font-mono">
-          v1.0 — powered by Claude AI
+          v1.1 — modern AI code analyzer
         </p>
       </div>
     </div>
