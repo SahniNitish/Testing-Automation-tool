@@ -8,7 +8,15 @@ const steps = [
   { icon: BarChart3, label: "Results", desc: "Get AI-powered test reports" },
 ];
 
-export default function LoginPage({ onLogin }) {
+const ERROR_MESSAGES = {
+  invalid_callback: "GitHub sent an invalid callback. Try signing in again.",
+  missing_access_token: "GitHub did not return an access token.",
+  github_oauth_failed: "GitHub sign-in failed. Check your backend OAuth settings.",
+};
+
+export default function LoginPage({ onLogin, authError }) {
+  const errorMessage = authError ? (ERROR_MESSAGES[authError] || "GitHub sign-in failed.") : null;
+
   return (
     <div className="min-h-screen grid-bg flex items-center justify-center p-6">
       <div
@@ -45,6 +53,12 @@ export default function LoginPage({ onLogin }) {
           <p className="text-xs text-zinc-500 text-center mt-4">
             Requires repo access to analyze your code
           </p>
+
+          {errorMessage && (
+            <p className="text-xs text-rose-400 text-center mt-3">
+              {errorMessage}
+            </p>
+          )}
         </div>
 
         {/* Steps */}

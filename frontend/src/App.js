@@ -5,48 +5,43 @@ import axios from "axios";
 import LoginPage from "@/components/LoginPage";
 import Dashboard from "@/components/Dashboard";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://127.0.0.1:8000";
 const API = `${BACKEND_URL}/api`;
+
+axios.defaults.withCredentials = true;
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const authError = new URLSearchParams(window.location.search).get("auth_error");
 
   useEffect(() => {
-    const token = localStorage.getItem("aitestlab_token");
-    if (token) {
-      axios.get(`${API}/auth/me`)
-        .then(res => {
-          setUser(res.data);
-          setIsAuthenticated(true);
-        })
-        .catch(() => {
-          localStorage.removeItem("aitestlab_token");
-        })
-        .finally(() => setLoading(false));
-    } else {
-      setLoading(false);
-    }
-  }, []);
-
-  const handleLogin = useCallback(async () => {
-    try {
-      const callbackRes = await axios.get(`${API}/auth/github/callback?code=mock_code`);
-      if (callbackRes.data.success) {
-        localStorage.setItem("aitestlab_token", callbackRes.data.token);
-        setUser(callbackRes.data.user);
+    axios.get(`${API}/auth/me`)
+      .then(res => {
+        setUser(res.data);
         setIsAuthenticated(true);
-      }
-    } catch (err) {
-      console.error("Login failed:", err);
-    }
+      })
+      .catch(() => {
+        setIsAuthenticated(false);
+        setUser(null);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
-  const handleLogout = useCallback(() => {
-    localStorage.removeItem("aitestlab_token");
-    setIsAuthenticated(false);
-    setUser(null);
+  const handleLogin = useCallback(() => {
+    window.location.assign(`${API}/auth/github`);
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await axios.post(`${API}/auth/logout`);
+    } catch (err) {
+      console.error("Logout failed:", err);
+    } finally {
+      setIsAuthenticated(false);
+      setUser(null);
+    }
   }, []);
 
   if (loading) {
@@ -66,7 +61,7 @@ function App() {
             isAuthenticated && user ? (
               <Dashboard user={user} onLogout={handleLogout} />
             ) : (
-              <LoginPage onLogin={handleLogin} />
+              <LoginPage onLogin={handleLogin} authError={authError} />
             )
           }
         />

@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 
+import json
+import os
 import requests
 import sys
-import json
-from datetime import datetime
 
 class AITestLabAPITester:
-    def __init__(self, base_url="https://code-audit-ai-4.preview.emergentagent.com"):
+    def __init__(self, base_url=None):
+        if base_url is None:
+            base_url = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
         self.base_url = base_url
         self.api_url = f"{base_url}/api"
+        self.session = requests.Session()
         self.tests_run = 0
         self.tests_passed = 0
         self.failed_tests = []
 
-    def run_test(self, name, method, endpoint, expected_status, data=None, headers=None):
+    def run_test(self, name, method, endpoint, expected_status, data=None, headers=None, allow_redirects=True):
         """Run a single API test"""
         url = f"{self.api_url}/{endpoint}"
         if headers is None:
@@ -25,13 +28,13 @@ class AITestLabAPITester:
         
         try:
             if method == 'GET':
-                response = requests.get(url, headers=headers, timeout=30)
+                response = self.session.get(url, headers=headers, timeout=30, allow_redirects=allow_redirects)
             elif method == 'POST':
-                response = requests.post(url, json=data, headers=headers, timeout=30)
+                response = self.session.post(url, json=data, headers=headers, timeout=30, allow_redirects=allow_redirects)
             elif method == 'PUT':
-                response = requests.put(url, json=data, headers=headers, timeout=30)
+                response = self.session.put(url, json=data, headers=headers, timeout=30, allow_redirects=allow_redirects)
             elif method == 'DELETE':
-                response = requests.delete(url, headers=headers, timeout=30)
+                response = self.session.delete(url, headers=headers, timeout=30, allow_redirects=allow_redirects)
 
             success = response.status_code == expected_status
             if success:
@@ -47,12 +50,13 @@ class AITestLabAPITester:
                 print(f"   Response: {response.text[:200]}")
                 self.failed_tests.append(f"{name}: Expected {expected_status}, got {response.status_code}")
 
-            return success, response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text
+            payload = response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text
+            return success, payload, response
 
         except Exception as e:
             print(f"❌ Failed - Error: {str(e)}")
             self.failed_tests.append(f"{name}: {str(e)}")
-            return False, {}
+            return False, {}, None
 
     def test_auth_endpoints(self):
         """Test authentication endpoints (mocked)"""
@@ -61,19 +65,25 @@ class AITestLabAPITester:
         print("="*50)
         
         # Test GitHub auth redirect
-        self.run_test(
+        success, _, redirect_response = self.run_test(
             "GitHub Auth Redirect",
             "GET",
             "auth/github",
-            200
+            307,
+            allow_redirects=False
         )
+        callback_location = redirect_response.headers.get("location") if redirect_response is not None else None
+        if callback_location:
+            print(f"✅ Redirect location: {callback_location}")
         
         # Test GitHub callback
-        success, response = self.run_test(
+        callback_endpoint = callback_location.replace(f"{self.base_url}/api/", "") if callback_location and callback_location.startswith(f"{self.base_url}/api/") else callback_location.replace("/api/", "") if callback_location else "auth/github/callback?code=mock_code"
+        success, _, _ = self.run_test(
             "GitHub Auth Callback",
             "GET",
-            "auth/github/callback?code=mock_code",
-            200
+            callback_endpoint,
+            307,
+            allow_redirects=False
         )
         
         # Test get current user
@@ -92,6 +102,25 @@ class AITestLabAPITester:
             200
         )
 
+        # Restore session for the remaining authenticated API tests
+        success, _, redirect_response = self.run_test(
+            "GitHub Auth Redirect (Session Restore)",
+            "GET",
+            "auth/github",
+            307,
+            allow_redirects=False
+        )
+        callback_location = redirect_response.headers.get("location") if redirect_response is not None else None
+        callback_endpoint = callback_location.replace(f"{self.base_url}/api/", "") if callback_location and callback_location.startswith(f"{self.base_url}/api/") else callback_location.replace("/api/", "") if callback_location else None
+        if callback_endpoint:
+            self.run_test(
+                "GitHub Auth Callback (Session Restore)",
+                "GET",
+                callback_endpoint,
+                307,
+                allow_redirects=False
+            )
+
     def test_repo_endpoints(self):
         """Test repository endpoints"""
         print("\n" + "="*50)
@@ -99,7 +128,7 @@ class AITestLabAPITester:
         print("="*50)
         
         # Test get repositories
-        success, repos = self.run_test(
+        success, repos, _ = self.run_test(
             "Get Repositories",
             "GET",
             "repos",
@@ -121,7 +150,7 @@ class AITestLabAPITester:
         print("TESTING STATS ENDPOINT")
         print("="*50)
         
-        success, stats = self.run_test(
+        success, stats, _ = self.run_test(
             "Get Stats",
             "GET",
             "stats",
@@ -152,7 +181,7 @@ class AITestLabAPITester:
             "commit_sha": "abc1234"
         }
         
-        success, run_response = self.run_test(
+        success, run_response, _ = self.run_test(
             "Run Analysis",
             "POST",
             "analysis/run",
@@ -166,7 +195,7 @@ class AITestLabAPITester:
             print(f"✅ Analysis started with run_id: {run_id}")
         
         # Test get reports
-        success, reports = self.run_test(
+        success, reports, _ = self.run_test(
             "Get Reports",
             "GET",
             "reports",
@@ -182,7 +211,7 @@ class AITestLabAPITester:
             import time
             time.sleep(3)
             
-            success, report = self.run_test(
+            success, report, _ = self.run_test(
                 f"Get Specific Report ({run_id})",
                 "GET",
                 f"reports/{run_id}",
@@ -243,7 +272,8 @@ class AITestLabAPITester:
             return 1
 
 def main():
-    tester = AITestLabAPITester()
+    base_url = sys.argv[1] if len(sys.argv) > 1 else None
+    tester = AITestLabAPITester(base_url=base_url)
     return tester.run_all_tests()
 
 if __name__ == "__main__":
