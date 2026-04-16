@@ -14,13 +14,15 @@ function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const authError = new URLSearchParams(window.location.search).get("auth_error");
+  const authErrorFromUrl = new URLSearchParams(window.location.search).get("auth_error");
+  const [authError, setAuthError] = useState(authErrorFromUrl);
 
   useEffect(() => {
     axios.get(`${API}/auth/me`)
       .then(res => {
         setUser(res.data);
         setIsAuthenticated(true);
+        setAuthError(null);
       })
       .catch(() => {
         setIsAuthenticated(false);
@@ -30,6 +32,7 @@ function App() {
   }, []);
 
   const handleLogin = useCallback(() => {
+    setAuthError(null);
     window.location.assign(`${API}/auth/github`);
   }, []);
 
@@ -42,6 +45,12 @@ function App() {
       setIsAuthenticated(false);
       setUser(null);
     }
+  }, []);
+
+  const handleSessionExpired = useCallback(() => {
+    setIsAuthenticated(false);
+    setUser(null);
+    setAuthError("session_expired");
   }, []);
 
   if (loading) {
@@ -59,7 +68,11 @@ function App() {
           path="/*"
           element={
             isAuthenticated && user ? (
-              <Dashboard user={user} onLogout={handleLogout} />
+              <Dashboard
+                user={user}
+                onLogout={handleLogout}
+                onSessionExpired={handleSessionExpired}
+              />
             ) : (
               <LoginPage onLogin={handleLogin} authError={authError} />
             )

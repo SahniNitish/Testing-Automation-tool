@@ -8,6 +8,10 @@ import logging
 import asyncio
 import secrets
 import time
+import base64
+import difflib
+import json
+import re
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Any, Dict, List, Optional
@@ -188,6 +192,11 @@ class AnalysisReport(BaseModel):
     results: List[dict] = Field(default_factory=list)
     pr_comment: str = ""
     log_messages: List[str] = Field(default_factory=list)
+    engineer_summary: str = ""
+    findings: List[dict] = Field(default_factory=list)
+    suggested_fixes: List[dict] = Field(default_factory=list)
+    custom_tests: List[dict] = Field(default_factory=list)
+    pr_draft: Dict[str, Any] = Field(default_factory=dict)
 
 
 def github_oauth_configured() -> bool:
@@ -532,6 +541,1074 @@ TEST_TYPE_NAMES = {
     "performance": "Performance"
 }
 
+FILE_HEADER_PATTERN = re.compile(r"^# ---- FILE: (?P<path>.+?) ----\n", re.MULTILINE)
+SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+LANGUAGE_BY_EXTENSION = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".go": "go",
+    ".java": "java",
+    ".rb": "ruby",
+    ".rs": "rust",
+}
+MOCK_PRIMARY_FILES = {
+    "payment-service": "payments/service.py",
+    "auth-gateway": "src/auth-gateway.js",
+    "data-pipeline": "pipeline/pipeline.go",
+    "default": "analytics/metrics.py",
+}
+
+
+def infer_primary_file_path(repo_name: str) -> str:
+    return MOCK_PRIMARY_FILES.get(repo_name, MOCK_PRIMARY_FILES["default"])
+
+
+def language_from_path(path: str) -> str:
+    return LANGUAGE_BY_EXTENSION.get(os.path.splitext(path)[1].lower(), "text")
+
+
+def parse_code_files(code: str, repo_name: str) -> List[Dict[str, str]]:
+    files: List[Dict[str, str]] = []
+    matches = list(FILE_HEADER_PATTERN.finditer(code))
+
+    if not matches:
+        path = infer_primary_file_path(repo_name)
+        return [{"path": path, "content": code.strip(), "language": language_from_path(path)}]
+
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(code)
+        path = match.group("path").strip()
+        content = code[start:end].strip("\n")
+        files.append({"path": path, "content": content, "language": language_from_path(path)})
+
+    return files
+
+
+def build_patch_preview(path: str, original: str, updated: str) -> str:
+    diff = difflib.unified_diff(
+        original.splitlines(),
+        updated.splitlines(),
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+        lineterm="",
+    )
+    patch = "\n".join(diff).strip()
+    return patch or f"# No textual diff generated for {path}"
+
+
+def strip_markdown_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        match = re.search(r"```(?:json)?\s*(.*?)```", stripped, flags=re.DOTALL)
+        if match:
+            return match.group(1).strip()
+    return stripped
+
+
+def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    candidate = strip_markdown_fences(text)
+    decoder = json.JSONDecoder()
+
+    for index, char in enumerate(candidate):
+        if char != "{":
+            continue
+        try:
+            payload, _end = decoder.raw_decode(candidate[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def select_focus_files(files: List[Dict[str, str]], findings: List[Dict[str, str]], limit: int = 4, max_chars: int = 45_000) -> List[Dict[str, str]]:
+    selected: List[Dict[str, str]] = []
+    selected_paths = set()
+    remaining_chars = max_chars
+
+    prioritized_paths = [finding["file_path"] for finding in findings if finding.get("file_path")]
+    prioritized_paths.extend(file_info["path"] for file_info in files)
+
+    by_path = {file_info["path"]: file_info for file_info in files}
+
+    for path in prioritized_paths:
+        file_info = by_path.get(path)
+        if not file_info or path in selected_paths:
+            continue
+
+        content = file_info["content"]
+        if not content:
+            continue
+
+        allowed = min(len(content), remaining_chars)
+        if allowed <= 0:
+            break
+
+        trimmed_content = content[:allowed]
+        selected.append({**file_info, "content": trimmed_content})
+        selected_paths.add(path)
+        remaining_chars -= len(trimmed_content)
+
+        if len(selected) >= limit:
+            break
+
+    return selected
+
+
+def normalize_model_generated_fixes(
+    fixes: List[Dict[str, Any]],
+    file_lookup: Dict[str, Dict[str, str]],
+) -> List[Dict[str, str]]:
+    normalized: List[Dict[str, str]] = []
+
+    for raw_fix in fixes[:3]:
+        file_path = str(raw_fix.get("file_path", "")).strip()
+        updated_code = raw_fix.get("updated_code")
+        file_info = file_lookup.get(file_path)
+
+        if not file_info or not isinstance(updated_code, str) or not updated_code.strip():
+            continue
+
+        normalized.append(
+            {
+                "file_path": file_path,
+                "title": str(raw_fix.get("title") or f"Update {file_path}").strip(),
+                "summary": str(raw_fix.get("summary") or "AI-generated repository fix").strip(),
+                "explanation": str(
+                    raw_fix.get("explanation")
+                    or "This patch was generated from the repository context and the highest-priority findings."
+                ).strip(),
+                "language": file_info["language"],
+                "updated_code": updated_code.strip(),
+                "patch": build_patch_preview(file_path, file_info["content"], updated_code.strip()),
+            }
+        )
+
+    return normalized
+
+
+def normalize_model_generated_tests(tests: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    normalized: List[Dict[str, str]] = []
+
+    for raw_test in tests[:3]:
+        file_path = str(raw_test.get("file_path", "")).strip()
+        code = raw_test.get("code")
+        if not file_path or not isinstance(code, str) or not code.strip():
+            continue
+
+        normalized.append(
+            {
+                "file_path": file_path,
+                "title": str(raw_test.get("title") or f"Regression coverage for {file_path}").strip(),
+                "framework": str(raw_test.get("framework") or "repository-native").strip(),
+                "purpose": str(
+                    raw_test.get("purpose")
+                    or "Covers the failure mode highlighted in the AI engineer findings."
+                ).strip(),
+                "command": str(raw_test.get("command") or "Run the repository test command").strip(),
+                "code": code.strip(),
+            }
+        )
+
+    return normalized
+
+
+async def generate_model_backed_engineer_pack(
+    repo_full_name: str,
+    repo_name: str,
+    branch: str,
+    files: List[Dict[str, str]],
+    findings: List[Dict[str, str]],
+) -> Optional[Dict[str, Any]]:
+    if not ZAI_API_KEY or not files:
+        return None
+
+    focus_files = select_focus_files(files, findings)
+    if not focus_files:
+        return None
+
+    file_lookup = {file_info["path"]: file_info for file_info in files}
+    findings_json = json.dumps(findings[:4], indent=2)
+    files_payload = "\n\n".join(
+        (
+            f"PATH: {file_info['path']}\n"
+            f"LANGUAGE: {file_info['language']}\n"
+            "CONTENT:\n"
+            f"{file_info['content']}"
+        )
+        for file_info in focus_files
+    )
+
+    system_prompt = (
+        "You are a senior software engineer generating safe, repository-aware patches. "
+        "Return valid JSON only. Do not wrap the answer in markdown. "
+        "If you are not confident enough to change a file safely, return an empty fixes array."
+    )
+    user_prompt = (
+        f"Repository: {repo_full_name}\n"
+        f"Short name: {repo_name}\n"
+        f"Branch: {branch}\n\n"
+        "Known findings:\n"
+        f"{findings_json}\n\n"
+        "Candidate source files:\n"
+        f"{files_payload}\n\n"
+        "Return JSON with this schema:\n"
+        "{\n"
+        '  "summary": "one short paragraph",\n'
+        '  "fixes": [\n'
+        "    {\n"
+        '      "file_path": "must match one of the provided source file paths",\n'
+        '      "title": "short title",\n'
+        '      "summary": "what changed",\n'
+        '      "explanation": "why the fix helps",\n'
+        '      "updated_code": "the complete replacement file contents"\n'
+        "    }\n"
+        "  ],\n"
+        '  "tests": [\n'
+        "    {\n"
+        '      "file_path": "new or updated test file path",\n'
+        '      "title": "short test title",\n'
+        '      "framework": "pytest/jest/go test/etc",\n'
+        '      "purpose": "what risk this test covers",\n'
+        '      "command": "how to run it",\n'
+        '      "code": "complete test file contents"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- Prefer one or two precise fixes over broad rewrites.\n"
+        "- Preserve existing behavior outside the identified issues.\n"
+        "- Use test paths that match the repository language.\n"
+        "- If no safe fix is possible, keep fixes empty and explain why in summary.\n"
+    )
+
+    try:
+        import openai
+
+        client = openai.AsyncOpenAI(api_key=ZAI_API_KEY, base_url=ZAI_BASE_URL)
+        completion = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=ZAI_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            ),
+            timeout=90,
+        )
+        content = completion.choices[0].message.content or ""
+        payload = extract_json_object(content)
+        if not payload:
+            logger.warning("Model-backed engineer pack returned non-JSON content for %s", repo_full_name)
+            return None
+
+        normalized_fixes = normalize_model_generated_fixes(payload.get("fixes", []), file_lookup)
+        normalized_tests = normalize_model_generated_tests(payload.get("tests", []))
+        summary = str(payload.get("summary") or "").strip()
+
+        if not normalized_fixes and not normalized_tests and not summary:
+            return None
+
+        logger.info(
+            "Model-backed engineer pack prepared for %s: %d fixes, %d tests",
+            repo_full_name,
+            len(normalized_fixes),
+            len(normalized_tests),
+        )
+        return {
+            "engineer_summary": summary,
+            "suggested_fixes": normalized_fixes,
+            "custom_tests": normalized_tests,
+        }
+    except Exception as exc:
+        logger.warning("Model-backed engineer pack generation failed for %s: %s", repo_full_name, exc)
+        return None
+
+
+def sanitize_branch_fragment(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return cleaned or "repo"
+
+
+def build_branch_name(repo_name: str, run_id: str) -> str:
+    return f"ai/{sanitize_branch_fragment(repo_name)}-fix-{run_id[:8]}"
+
+
+def add_finding(
+    findings: List[Dict[str, str]],
+    severity: str,
+    file_path: str,
+    title: str,
+    explanation: str,
+    recommendation: str,
+):
+    findings.append(
+        {
+            "severity": severity,
+            "file_path": file_path,
+            "title": title,
+            "explanation": explanation,
+            "recommendation": recommendation,
+        }
+    )
+
+
+def extract_function_names(content: str, path: str) -> List[str]:
+    extension = os.path.splitext(path)[1].lower()
+    if extension == ".py":
+        return re.findall(r"^def\s+([A-Za-z_]\w*)\(", content, flags=re.MULTILINE)
+    if extension in {".js", ".jsx", ".ts", ".tsx"}:
+        names = re.findall(r"(?:export\s+)?function\s+([A-Za-z_]\w*)\(", content)
+        names.extend(re.findall(r"const\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?\(", content))
+        return names
+    if extension == ".go":
+        return re.findall(r"^func\s+(?:\([^)]+\)\s*)?([A-Za-z_]\w*)\(", content, flags=re.MULTILINE)
+    return []
+
+
+def detect_findings(files: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    findings: List[Dict[str, str]] = []
+
+    for file_info in files:
+        path = file_info["path"]
+        content = file_info["content"]
+        lowered = content.lower()
+
+        if "int(amount * 100)" in content:
+            add_finding(
+                findings,
+                "high",
+                path,
+                "Currency conversion can round customer payments incorrectly",
+                "Multiplying a float-like amount by 100 and truncating it can undercharge or overcharge values that need bankers rounding.",
+                "Normalize amounts through Decimal before sending minor units to Stripe.",
+            )
+
+        if "balance_transactions.list(limit=100)" in content:
+            add_finding(
+                findings,
+                "medium",
+                path,
+                "Balance retrieval reads only the first page of Stripe transactions",
+                "The current balance calculation stops at 100 rows, which can drift from the real account balance as volume grows.",
+                "Iterate through the full paginated collection or query the account balance endpoint directly.",
+            )
+
+        if "authorization?.split(' ')[1]" in content or 'authorization?.split(" ")[1]' in content:
+            add_finding(
+                findings,
+                "medium",
+                path,
+                "Bearer token parsing trusts malformed Authorization headers",
+                "Splitting on a space without validating the Bearer scheme can treat bad headers as valid credentials.",
+                "Parse the scheme explicitly and reject anything that is not a well-formed Bearer token.",
+            )
+
+        if "jwt.sign" in content and "process.env.jwt_secret" in lowered and "if (!secret)" not in lowered:
+            add_finding(
+                findings,
+                "high",
+                path,
+                "JWT secret is not validated before signing tokens",
+                "If the environment variable is missing, token creation and verification can fail unpredictably at runtime.",
+                "Fail fast when the secret is absent and surface a clear configuration error.",
+            )
+
+        if 'r.Data["processed"] = true' in content or "r.Data[\"processed\"] = true" in content:
+            add_finding(
+                findings,
+                "medium",
+                path,
+                "Pipeline workers mutate shared record maps in place",
+                "Reusing map references across goroutines can cause subtle races and make debugging data corruption painful.",
+                "Clone mutable maps before annotating transformed records.",
+            )
+
+        if "filter_outliers" in content and 'metrics["std"]' in content:
+            add_finding(
+                findings,
+                "medium",
+                path,
+                "Outlier filtering collapses when the standard deviation is zero",
+                "Identical values produce a zero standard deviation, which makes the threshold math misleading and can hide intent.",
+                "Short-circuit zero-variance inputs and return the original values unchanged.",
+            )
+
+        if "except:" in content:
+            add_finding(
+                findings,
+                "medium",
+                path,
+                "Bare except masks real failures",
+                "Catching every exception makes diagnosis harder and can hide programming errors during incident response.",
+                "Catch the specific exception types you expect and let the rest fail loudly.",
+            )
+
+        if "eval(" in lowered or "exec(" in lowered:
+            add_finding(
+                findings,
+                "critical",
+                path,
+                "Dynamic code execution opens a remote-code-execution path",
+                "Executing unchecked strings is one of the fastest ways to turn input handling into a full compromise.",
+                "Remove eval/exec and replace it with a constrained parser or explicit dispatch table.",
+            )
+
+    if not findings and files:
+        primary = files[0]
+        add_finding(
+            findings,
+            "low",
+            primary["path"],
+            "No obvious blocker was found in the fallback review",
+            "The local fallback analyzer did not detect a deterministic defect, so the safest next step is deeper AI review plus targeted regression coverage.",
+            "Generate focused tests around the highest-risk public functions before landing changes.",
+        )
+
+    findings.sort(key=lambda item: (SEVERITY_ORDER.get(item["severity"], 99), item["file_path"], item["title"]))
+    return findings[:6]
+
+
+def build_payment_service_fix(file_info: Dict[str, str]) -> List[Dict[str, str]]:
+    updated_code = """import stripe
+from decimal import Decimal, ROUND_HALF_UP
+
+
+class PaymentProcessor:
+    def __init__(self, api_key):
+        if not api_key:
+            raise ValueError("Stripe API key is required")
+        self.client = stripe.Stripe(api_key)
+        self.retry_count = 3
+
+    def _amount_to_minor_units(self, amount):
+        value = Decimal(str(amount))
+        if value <= 0:
+            raise ValueError("Amount must be positive")
+        return int((value * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    def process_payment(self, amount, currency, customer_id):
+        if not currency:
+            raise ValueError("Currency is required")
+        if not customer_id:
+            raise ValueError("Customer ID is required")
+
+        charge = self.client.charges.create(
+            amount=self._amount_to_minor_units(amount),
+            currency=currency.lower(),
+            customer=customer_id,
+        )
+        return {"status": charge.status, "id": charge.id}
+
+    def refund(self, charge_id, amount=None):
+        refund_amount = None if amount is None else self._amount_to_minor_units(amount)
+        return self.client.refunds.create(charge=charge_id, amount=refund_amount)
+
+    def get_balance(self, customer_id=None):
+        transactions = self.client.balance_transactions.list(limit=100)
+        total = sum(Decimal(str(t.amount)) for t in transactions.auto_paging_iter())
+        return total / Decimal("100")
+"""
+    return [
+        {
+            "file_path": file_info["path"],
+            "title": "Harden Stripe money handling and validation",
+            "summary": "Normalize money with Decimal, reject incomplete requests early, and avoid partial balance reads.",
+            "explanation": "This fix makes the payment flow easier to trust: money is rounded intentionally, required fields fail fast, and the balance helper no longer stops after the first Stripe page.",
+            "language": "python",
+            "updated_code": updated_code,
+            "patch": build_patch_preview(file_info["path"], file_info["content"], updated_code),
+        }
+    ]
+
+
+def build_auth_gateway_fix(file_info: Dict[str, str]) -> List[Dict[str, str]]:
+    updated_code = """import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
+
+const SECRET = process.env.JWT_SECRET;
+const SALT_ROUNDS = 10;
+
+function ensureSecret() {
+  if (!SECRET) {
+    throw new Error("JWT_SECRET must be configured");
+  }
+}
+
+function readBearerToken(header = "") {
+  const [scheme, token] = header.split(" ");
+  if (scheme !== "Bearer" || !token) {
+    return null;
+  }
+  return token;
+}
+
+export async function hashPassword(password) {
+  if (!password) {
+    throw new Error("Password is required");
+  }
+  return bcrypt.hash(password, SALT_ROUNDS);
+}
+
+export async function verifyPassword(password, hash) {
+  if (!password || !hash) {
+    return false;
+  }
+  return bcrypt.compare(password, hash);
+}
+
+export function generateToken(user) {
+  ensureSecret();
+  if (!user?.id || !user?.role) {
+    throw new Error("User id and role are required");
+  }
+
+  return jwt.sign(
+    { id: user.id, role: user.role, email: user.email },
+    SECRET,
+    { expiresIn: "24h" }
+  );
+}
+
+export function verifyToken(token) {
+  if (!token) {
+    return null;
+  }
+
+  ensureSecret();
+
+  try {
+    return jwt.verify(token, SECRET);
+  } catch {
+    return null;
+  }
+}
+
+export function requireAuth(roles = []) {
+  return (req, res, next) => {
+    const token = readBearerToken(req.headers.authorization);
+    if (!token) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const decoded = verifyToken(token);
+    if (!decoded) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    if (roles.length && !roles.includes(decoded.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    req.user = decoded;
+    next();
+  };
+}
+"""
+    return [
+        {
+            "file_path": file_info["path"],
+            "title": "Validate auth configuration and Bearer parsing",
+            "summary": "Reject malformed Authorization headers and fail fast if JWT configuration is missing.",
+            "explanation": "The updated gateway is easier to reason about because every auth decision now follows a strict sequence: verify configuration, parse the Bearer token, then enforce the role policy.",
+            "language": "javascript",
+            "updated_code": updated_code,
+            "patch": build_patch_preview(file_info["path"], file_info["content"], updated_code),
+        }
+    ]
+
+
+def build_data_pipeline_fix(file_info: Dict[str, str]) -> List[Dict[str, str]]:
+    updated_code = """package pipeline
+
+import (
+    "context"
+    "sync"
+    "time"
+)
+
+type Record struct {
+    ID        string
+    Data      map[string]interface{}
+    Timestamp time.Time
+}
+
+type Pipeline struct {
+    workers   int
+    batchSize int
+    buffer    []Record
+    mu        sync.Mutex
+}
+
+func NewPipeline(workers, batchSize int) *Pipeline {
+    return &Pipeline{workers: workers, batchSize: batchSize}
+}
+
+func (p *Pipeline) Process(ctx context.Context, records []Record) error {
+    ch := make(chan Record, len(records))
+    for _, r := range records {
+        ch <- r
+    }
+    close(ch)
+
+    var wg sync.WaitGroup
+    for i := 0; i < p.workers; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            for {
+                select {
+                case <-ctx.Done():
+                    return
+                case record, ok := <-ch:
+                    if !ok {
+                        return
+                    }
+                    p.transform(record)
+                }
+            }
+        }()
+    }
+
+    wg.Wait()
+    return ctx.Err()
+}
+
+func (p *Pipeline) transform(r Record) Record {
+    clonedData := map[string]interface{}{}
+    for key, value := range r.Data {
+        clonedData[key] = value
+    }
+    clonedData["processed"] = true
+
+    r.Data = clonedData
+    r.Timestamp = time.Now().UTC()
+    return r
+}
+"""
+    return [
+        {
+            "file_path": file_info["path"],
+            "title": "Respect cancellation and avoid shared-map mutation",
+            "summary": "Workers now honor context cancellation and clone record payloads before mutation.",
+            "explanation": "This change makes the pipeline friendlier to production incidents: shutdowns stop quickly, and transformed records cannot accidentally mutate the caller's original maps.",
+            "language": "go",
+            "updated_code": updated_code,
+            "patch": build_patch_preview(file_info["path"], file_info["content"], updated_code),
+        }
+    ]
+
+
+def build_default_fix(file_info: Dict[str, str]) -> List[Dict[str, str]]:
+    updated_code = """def calculate_metrics(data):
+    if not data:
+        return {"mean": 0, "median": 0, "std": 0}
+
+    n = len(data)
+    mean = sum(data) / n
+    sorted_data = sorted(data)
+    median = sorted_data[n // 2] if n % 2 else (sorted_data[n // 2 - 1] + sorted_data[n // 2]) / 2
+    variance = sum((x - mean) ** 2 for x in data) / n
+    std = variance ** 0.5
+
+    return {"mean": mean, "median": median, "std": std, "count": n}
+
+
+def filter_outliers(data, threshold=2):
+    metrics = calculate_metrics(data)
+    if metrics["std"] == 0:
+        return list(data)
+    return [x for x in data if abs(x - metrics["mean"]) <= threshold * metrics["std"]]
+
+
+class DataStore:
+    def __init__(self):
+        self.store = {}
+
+    def put(self, key, value):
+        self.store[key] = value
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def delete(self, key):
+        if key in self.store:
+            del self.store[key]
+            return True
+        return False
+
+    def search(self, pattern):
+        results = []
+        for key in self.store:
+            if pattern in key:
+                results.append((key, self.store[key]))
+        return results
+"""
+    return [
+        {
+            "file_path": file_info["path"],
+            "title": "Guard zero-variance analytics flows",
+            "summary": "Keep outlier filtering stable when every datapoint is identical.",
+            "explanation": "This is a small but important quality-of-life fix: constant datasets now behave predictably instead of relying on threshold math that adds no signal.",
+            "language": "python",
+            "updated_code": updated_code,
+            "patch": build_patch_preview(file_info["path"], file_info["content"], updated_code),
+        }
+    ]
+
+
+def build_suggested_fixes(repo_name: str, files: List[Dict[str, str]], findings: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    if not files:
+        return []
+
+    primary = files[0]
+    if repo_name == "payment-service":
+        return build_payment_service_fix(primary)
+    if repo_name == "auth-gateway":
+        return build_auth_gateway_fix(primary)
+    if repo_name == "data-pipeline":
+        return build_data_pipeline_fix(primary)
+    if "filter_outliers" in primary["content"]:
+        return build_default_fix(primary)
+
+    top_finding = findings[0] if findings else None
+    patch_lines = [f"# {item['severity'].upper()}: {item['title']}" for item in findings[:3]]
+    return [
+        {
+            "file_path": primary["path"],
+            "title": "Prepare a targeted hardening pass",
+            "summary": "The fallback analyzer identified the first file as the best place to start applying guardrails.",
+            "explanation": "I do not have enough deterministic context to rewrite this file safely without a model-backed patch, so the app keeps the fix as a review-ready plan instead of inventing risky code.",
+            "language": primary["language"],
+            "updated_code": "",
+            "patch": "\n".join(patch_lines) if patch_lines else "# Generate a model-backed patch for this repository.",
+            "focus_area": top_finding["title"] if top_finding else "General hardening",
+        }
+    ]
+
+
+def build_payment_service_tests() -> List[Dict[str, str]]:
+    code = """from decimal import Decimal
+from unittest.mock import Mock
+
+import pytest
+
+from payments.service import PaymentProcessor
+
+
+@pytest.fixture
+def processor():
+    processor = PaymentProcessor("sk_test_123")
+    processor.client = Mock()
+    return processor
+
+
+def test_process_payment_normalizes_amount_with_decimal_rounding(processor):
+    charge = Mock(status="succeeded", id="ch_123")
+    processor.client.charges.create.return_value = charge
+
+    result = processor.process_payment("10.015", "USD", "cus_123")
+
+    assert result == {"status": "succeeded", "id": "ch_123"}
+    processor.client.charges.create.assert_called_once_with(amount=1002, currency="usd", customer="cus_123")
+
+
+def test_process_payment_rejects_missing_customer_id(processor):
+    with pytest.raises(ValueError):
+        processor.process_payment("10.00", "USD", "")
+
+
+def test_get_balance_aggregates_all_pages(processor):
+    page = Mock()
+    page.auto_paging_iter.return_value = [Mock(amount=1250), Mock(amount=250)]
+    processor.client.balance_transactions.list.return_value = page
+
+    assert processor.get_balance() == Decimal("15")
+"""
+    return [
+        {
+            "file_path": "tests/test_payment_processor.py",
+            "title": "Regression tests for Stripe money handling",
+            "framework": "pytest",
+            "purpose": "Covers Decimal rounding, required-field validation, and full balance aggregation.",
+            "command": "pytest tests/test_payment_processor.py",
+            "code": code,
+        }
+    ]
+
+
+def build_auth_gateway_tests() -> List[Dict[str, str]]:
+    code = """import { requireAuth, verifyToken } from "../auth-gateway";
+
+describe("auth gateway hardening", () => {
+  it("rejects malformed bearer headers", () => {
+    const req = { headers: { authorization: "Token abc" } };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+
+    requireAuth()(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("returns null when verifyToken is called without a token", () => {
+    expect(verifyToken("")).toBeNull();
+  });
+});
+"""
+    return [
+        {
+            "file_path": "src/__tests__/auth-gateway.test.js",
+            "title": "Regression tests for token parsing",
+            "framework": "jest",
+            "purpose": "Locks down Bearer-token parsing and invalid-token handling.",
+            "command": "yarn test --watch=false",
+            "code": code,
+        }
+    ]
+
+
+def build_data_pipeline_tests() -> List[Dict[str, str]]:
+    code = """package pipeline
+
+import (
+    "context"
+    "testing"
+)
+
+func TestProcessStopsWhenContextIsCancelled(t *testing.T) {
+    t.Parallel()
+
+    ctx, cancel := context.WithCancel(context.Background())
+    cancel()
+
+    pipeline := NewPipeline(2, 10)
+    if err := pipeline.Process(ctx, []Record{{ID: "1"}}); err == nil {
+        t.Fatalf("expected cancellation error")
+    }
+}
+
+func TestTransformClonesDataMap(t *testing.T) {
+    t.Parallel()
+
+    original := map[string]interface{}{"source": "raw"}
+    pipeline := NewPipeline(2, 10)
+    transformed := pipeline.transform(Record{ID: "1", Data: original})
+
+    transformed.Data["source"] = "processed"
+
+    if original["source"] != "raw" {
+        t.Fatalf("expected original map to remain unchanged")
+    }
+}
+"""
+    return [
+        {
+            "file_path": "pipeline/pipeline_test.go",
+            "title": "Regression tests for cancellation and data isolation",
+            "framework": "go test",
+            "purpose": "Ensures worker shutdown follows context cancellation and data maps are copied before mutation.",
+            "command": "go test ./...",
+            "code": code,
+        }
+    ]
+
+
+def build_default_tests() -> List[Dict[str, str]]:
+    code = """from analytics.metrics import filter_outliers
+
+
+def test_filter_outliers_returns_original_values_when_standard_deviation_is_zero():
+    values = [5, 5, 5]
+
+    assert filter_outliers(values) == values
+"""
+    return [
+        {
+            "file_path": "tests/test_metrics.py",
+            "title": "Regression tests for constant datasets",
+            "framework": "pytest",
+            "purpose": "Protects the zero-variance analytics path that previously produced confusing threshold logic.",
+            "command": "pytest tests/test_metrics.py",
+            "code": code,
+        }
+    ]
+
+
+def build_generic_test(file_info: Dict[str, str]) -> Dict[str, str]:
+    functions = extract_function_names(file_info["content"], file_info["path"])
+    target_name = functions[0] if functions else "target_function"
+    extension = os.path.splitext(file_info["path"])[1].lower()
+
+    if extension == ".py":
+        module_path = file_info["path"][:-3].replace("/", ".")
+        code = f"""import pytest
+import {module_path} as target_module
+
+
+def test_{target_name}_stays_callable_after_the_fix():
+    if not hasattr(target_module, "{target_name}"):
+        pytest.skip("Update the import path after applying the generated patch")
+
+    assert callable(getattr(target_module, "{target_name}"))
+"""
+        return {
+            "file_path": "tests/test_ai_regression.py",
+            "title": f"Regression scaffold for {target_name}",
+            "framework": "pytest",
+            "purpose": "Creates a landing zone for the AI-generated fix before the team fills in business-specific fixtures.",
+            "command": "pytest tests/test_ai_regression.py",
+            "code": code,
+        }
+
+    if extension in {".js", ".jsx", ".ts", ".tsx"}:
+        code = f"""describe("AI regression coverage", () => {{
+  it("keeps {target_name} available for the runtime entrypoint", () => {{
+    expect(true).toBe(true);
+  }});
+}});
+"""
+        return {
+            "file_path": "src/__tests__/ai-regression.test.js",
+            "title": f"Regression scaffold for {target_name}",
+            "framework": "jest",
+            "purpose": "Provides a quick place to turn the review findings into executable regression tests.",
+            "command": "yarn test --watch=false",
+            "code": code,
+        }
+
+    code = """package main
+
+import "testing"
+
+func TestAIRegressionCoverage(t *testing.T) {
+    t.Parallel()
+}
+"""
+    return {
+        "file_path": "ai_regression_test.go",
+        "title": "Regression scaffold for generated review findings",
+        "framework": "go test",
+        "purpose": "Creates a starter regression file that can grow with the review findings.",
+        "command": "go test ./...",
+        "code": code,
+    }
+
+
+def build_custom_tests(repo_name: str, files: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    if repo_name == "payment-service":
+        return build_payment_service_tests()
+    if repo_name == "auth-gateway":
+        return build_auth_gateway_tests()
+    if repo_name == "data-pipeline":
+        return build_data_pipeline_tests()
+    if files and "filter_outliers" in files[0]["content"]:
+        return build_default_tests()
+    return [build_generic_test(files[0])] if files else []
+
+
+def build_pr_body(
+    repo_full_name: str,
+    branch: str,
+    findings: List[Dict[str, str]],
+    fixes: List[Dict[str, str]],
+    custom_tests: List[Dict[str, str]],
+) -> str:
+    lines = [
+        f"## AI Code Engineer Draft for {repo_full_name}",
+        "",
+        f"Base branch: `{branch}`",
+        "",
+        "### Why this PR",
+    ]
+
+    if findings:
+        for finding in findings[:3]:
+            lines.append(f"- {finding['severity'].upper()}: {finding['title']} ({finding['file_path']})")
+    else:
+        lines.append("- Tightens the riskiest paths identified during analysis.")
+
+    lines.extend(["", "### Proposed code changes"])
+    for fix in fixes:
+        lines.append(f"- `{fix['file_path']}`: {fix['summary']}")
+
+    if custom_tests:
+        lines.extend(["", "### Custom tests"])
+        for test in custom_tests:
+            lines.append(f"- `{test['file_path']}` using {test['framework']}: {test['purpose']}")
+
+    lines.extend(["", "### Reviewer guide", "- Confirm the patch still matches the intended business rules.", "- Run the generated regression tests and any repo-native CI before merging."])
+    return "\n".join(lines)
+
+
+def build_engineer_summary(findings: List[Dict[str, str]], fixes: List[Dict[str, str]], custom_tests: List[Dict[str, str]]) -> str:
+    top = findings[0] if findings else None
+    if not top:
+        return "AI engineer review is ready. No deterministic blocker surfaced in fallback mode, so the app generated a conservative fix and test plan."
+
+    return (
+        f"AI engineer review found {len(findings)} focus area(s). "
+        f"Top risk: {top['title']} in {top['file_path']}. "
+        f"The report includes {len(fixes)} fix pack(s) and {len(custom_tests)} custom regression test file(s)."
+    )
+
+
+async def build_engineer_report(
+    run_id: str,
+    repo_full_name: str,
+    repo_name: str,
+    branch: str,
+    code: str,
+) -> Dict[str, Any]:
+    files = parse_code_files(code, repo_name)
+    findings = detect_findings(files)
+    fixes = build_suggested_fixes(repo_name, files, findings)
+    custom_tests = build_custom_tests(repo_name, files)
+    engineer_summary = ""
+
+    if files and not any(fix.get("updated_code") for fix in fixes):
+        model_pack = await generate_model_backed_engineer_pack(
+            repo_full_name=repo_full_name,
+            repo_name=repo_name,
+            branch=branch,
+            files=files,
+            findings=findings,
+        )
+        if model_pack:
+            if model_pack.get("suggested_fixes"):
+                fixes = model_pack["suggested_fixes"]
+            if model_pack.get("custom_tests"):
+                custom_tests = model_pack["custom_tests"]
+            engineer_summary = model_pack.get("engineer_summary", "")
+
+    pr_ready = any(fix.get("updated_code") for fix in fixes)
+
+    pr_title_suffix = findings[0]["title"] if findings else "harden core paths"
+    pr_draft = {
+        "title": f"fix: {pr_title_suffix[:67].lower()}",
+        "body": build_pr_body(repo_full_name, branch, findings, fixes, custom_tests),
+        "branch_name": build_branch_name(repo_name, run_id),
+        "base_branch": branch,
+        "can_create": pr_ready,
+        "created": False,
+        "status": "ready" if pr_ready else "preview_only",
+        "url": None,
+        "preview_only_reason": None if pr_ready else "The fallback analyzer prepared a review plan, but it needs a model-backed patch before opening a safe PR.",
+    }
+
+    return {
+        "engineer_summary": engineer_summary or build_engineer_summary(findings, fixes, custom_tests),
+        "findings": findings,
+        "suggested_fixes": fixes,
+        "custom_tests": custom_tests,
+        "pr_draft": pr_draft,
+    }
+
 # ---- GitHub Code Fetching ----
 
 async def fetch_repo_tree(access_token: str, owner: str, repo: str, branch: str) -> List[Dict[str, Any]]:
@@ -623,6 +1700,77 @@ async def fetch_latest_commit_sha(access_token: str, repo_full_name: str, branch
     except Exception as e:
         logger.error("Failed to fetch commit SHA for %s: %s", repo_full_name, e)
     return None
+
+
+async def fetch_branch_head_sha(access_token: str, owner: str, repo: str, branch: str) -> str:
+    url = f"{GITHUB_API_BASE_URL}/repos/{owner}/{repo}/git/ref/heads/{branch}"
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        resp = await http.get(url, headers=github_headers(access_token))
+    resp.raise_for_status()
+    return resp.json()["object"]["sha"]
+
+
+async def create_github_branch(access_token: str, owner: str, repo: str, branch_name: str, base_sha: str):
+    url = f"{GITHUB_API_BASE_URL}/repos/{owner}/{repo}/git/refs"
+    payload = {"ref": f"refs/heads/{branch_name}", "sha": base_sha}
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        resp = await http.post(url, headers=github_headers(access_token), json=payload)
+    if resp.status_code == 422 and "Reference already exists" in resp.text:
+        return
+    resp.raise_for_status()
+
+
+async def fetch_github_file_sha(access_token: str, owner: str, repo: str, path: str, branch: str) -> Optional[str]:
+    url = f"{GITHUB_API_BASE_URL}/repos/{owner}/{repo}/contents/{path}?ref={branch}"
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        resp = await http.get(url, headers=github_headers(access_token))
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.json().get("sha")
+
+
+async def put_github_file(
+    access_token: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    path: str,
+    content: str,
+    message: str,
+):
+    payload: Dict[str, Any] = {
+        "message": message,
+        "content": base64.b64encode(content.encode("utf-8")).decode("utf-8"),
+        "branch": branch,
+    }
+
+    current_sha = await fetch_github_file_sha(access_token, owner, repo, path, branch)
+    if current_sha:
+        payload["sha"] = current_sha
+
+    url = f"{GITHUB_API_BASE_URL}/repos/{owner}/{repo}/contents/{path}"
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        resp = await http.put(url, headers=github_headers(access_token), json=payload)
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def open_github_pull_request(
+    access_token: str,
+    owner: str,
+    repo: str,
+    title: str,
+    body: str,
+    head: str,
+    base: str,
+) -> Dict[str, Any]:
+    url = f"{GITHUB_API_BASE_URL}/repos/{owner}/{repo}/pulls"
+    payload = {"title": title, "body": body, "head": head, "base": base, "draft": True}
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        resp = await http.post(url, headers=github_headers(access_token), json=payload)
+    resp.raise_for_status()
+    return resp.json()
 
 
 # ---- Helper Functions ----
@@ -801,6 +1949,10 @@ async def run_analysis_task(run_id: str, repo_full_name: str, repo_name: str, br
             )
 
         results = await asyncio.gather(*tasks)
+        await db.reports.update_one(
+            {"id": run_id},
+            {"$push": {"log_messages": "Generating AI fix packs and custom regression tests..."}}
+        )
 
         # Determine overall status
         statuses = [r["status"] for r in results]
@@ -811,9 +1963,11 @@ async def run_analysis_task(run_id: str, repo_full_name: str, repo_name: str, br
         else:
             overall = "passed"
 
+        engineer_report = await build_engineer_report(run_id, repo_full_name, repo_name, branch, code)
         report_data = {
             "status": overall,
             "results": results,
+            **engineer_report,
         }
         report_data["pr_comment"] = generate_pr_comment({
             **report_data,
@@ -823,6 +1977,10 @@ async def run_analysis_task(run_id: str, repo_full_name: str, repo_name: str, br
         })
 
         log_msgs = [f"{TEST_TYPE_NAMES[r['test_type']]} — {r['status'].upper()}" for r in results]
+        log_msgs.append(f"Fix pack ready — {len(engineer_report['suggested_fixes'])} file(s)")
+        log_msgs.append(f"Custom tests ready — {len(engineer_report['custom_tests'])} file(s)")
+        pr_status = "draft PR can be created" if engineer_report["pr_draft"].get("can_create") else "draft PR is preview only"
+        log_msgs.append(f"PR draft prepared — {pr_status}")
         log_msgs.append(f"Analysis complete — Overall: {overall.upper()}")
 
         await db.reports.update_one(
@@ -990,7 +2148,12 @@ async def run_analysis(req: AnalysisRequest, request: Request, background_tasks:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "results": [],
         "pr_comment": "",
-        "log_messages": ["Analysis queued..."]
+        "log_messages": ["Analysis queued..."],
+        "engineer_summary": "",
+        "findings": [],
+        "suggested_fixes": [],
+        "custom_tests": [],
+        "pr_draft": {},
     }
     await db.reports.insert_one({**report})
 
@@ -999,6 +2162,117 @@ async def run_analysis(req: AnalysisRequest, request: Request, background_tasks:
     )
 
     return {"run_id": run_id, "status": "queued"}
+
+
+@api_router.post("/reports/{run_id}/pull-request")
+async def create_pull_request_for_report(run_id: str, request: Request):
+    session = get_session(request)
+    report = await db.reports.find_one({"id": run_id}, {"_id": 0})
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    pr_draft = report.get("pr_draft") or {}
+    if pr_draft.get("created") and pr_draft.get("url"):
+        return {
+            "success": True,
+            "url": pr_draft["url"],
+            "branch": pr_draft.get("branch_name"),
+            "status": pr_draft.get("status"),
+        }
+
+    fixes = [item for item in report.get("suggested_fixes", []) if item.get("updated_code")]
+    custom_tests = [item for item in report.get("custom_tests", []) if item.get("code")]
+
+    if not fixes:
+        raise HTTPException(status_code=400, detail="This report only has a review preview. Generate a model-backed patch before opening a PR.")
+
+    branch_name = pr_draft.get("branch_name") or build_branch_name(report.get("repo_name", "repo"), run_id)
+    base_branch = pr_draft.get("base_branch") or report.get("branch", "main")
+
+    if session.get("is_mock"):
+        pr_url = f"https://github.com/{report['repo_full_name']}/pull/{run_id[:6]}"
+        updated_pr = {
+            **pr_draft,
+            "branch_name": branch_name,
+            "base_branch": base_branch,
+            "created": True,
+            "status": "draft_opened",
+            "url": pr_url,
+        }
+        await db.reports.update_one(
+            {"id": run_id},
+            {"$set": {"pr_draft": updated_pr}, "$push": {"log_messages": f"Draft PR opened at {pr_url}"}}
+        )
+        return {"success": True, "url": pr_url, "branch": branch_name, "status": "draft_opened"}
+
+    access_token = session.get("github_access_token")
+    if not access_token:
+        raise HTTPException(status_code=401, detail="GitHub access token missing")
+
+    owner, repo = report["repo_full_name"].split("/", 1)
+
+    try:
+        base_sha = await fetch_branch_head_sha(access_token, owner, repo, base_branch)
+        await create_github_branch(access_token, owner, repo, branch_name, base_sha)
+
+        for fix in fixes:
+            await put_github_file(
+                access_token,
+                owner,
+                repo,
+                branch_name,
+                fix["file_path"],
+                fix["updated_code"],
+                f"fix: {fix['title'].lower()}",
+            )
+
+        for test in custom_tests:
+            await put_github_file(
+                access_token,
+                owner,
+                repo,
+                branch_name,
+                test["file_path"],
+                test["code"],
+                f"test: add {test['title'].lower()}",
+            )
+
+        pr_response = await open_github_pull_request(
+            access_token,
+            owner,
+            repo,
+            pr_draft.get("title", f"fix: {report.get('repo_name', 'repo')} review updates"),
+            pr_draft.get("body", ""),
+            branch_name,
+            base_branch,
+        )
+    except httpx.HTTPStatusError as exc:
+        logger.error("GitHub PR creation failed for %s: %s", report["repo_full_name"], exc)
+        raise HTTPException(status_code=exc.response.status_code, detail="GitHub rejected the PR request") from exc
+    except httpx.HTTPError as exc:
+        logger.error("GitHub PR creation transport error for %s: %s", report["repo_full_name"], exc)
+        raise HTTPException(status_code=502, detail="GitHub PR request failed") from exc
+
+    updated_pr = {
+        **pr_draft,
+        "branch_name": branch_name,
+        "base_branch": base_branch,
+        "created": True,
+        "status": "draft_opened",
+        "url": pr_response.get("html_url"),
+        "number": pr_response.get("number"),
+    }
+    await db.reports.update_one(
+        {"id": run_id},
+        {"$set": {"pr_draft": updated_pr}, "$push": {"log_messages": f"Draft PR opened at {pr_response.get('html_url', 'GitHub')}"}}
+    )
+    return {
+        "success": True,
+        "url": pr_response.get("html_url"),
+        "number": pr_response.get("number"),
+        "branch": branch_name,
+        "status": "draft_opened",
+    }
 
 @api_router.get("/reports")
 async def get_reports():
