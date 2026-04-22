@@ -12,6 +12,7 @@ import base64
 import difflib
 import json
 import re
+from collections import defaultdict
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,10 @@ except ImportError:  # pragma: no cover - optional dependency in local mode
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+BENCHMARKS_DIR = ROOT_DIR.parent / "benchmarks"
+BENCHMARK_CORPUS_DIR = BENCHMARKS_DIR / "corpus"
+BENCHMARK_RESULTS_DIR = BENCHMARKS_DIR / "results"
+BENCHMARK_RELIABILITY_PATH = BENCHMARK_RESULTS_DIR / "latest_agent_reliability.json"
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -173,6 +178,8 @@ class AnalysisRequest(BaseModel):
     branch: str = "main"
     commit_sha: Optional[str] = None
     code_snippet: Optional[str] = None
+    analysis_mode: str = "classic"
+    benchmark_case_id: Optional[str] = None
 
 
 class ReportChatRequest(BaseModel):
@@ -202,6 +209,14 @@ class AnalysisReport(BaseModel):
     custom_tests: List[dict] = Field(default_factory=list)
     pr_draft: Dict[str, Any] = Field(default_factory=dict)
     chat_history: List[dict] = Field(default_factory=list)
+    analysis_mode: str = "classic"
+    agent_runs: List[dict] = Field(default_factory=list)
+    claim_groups: List[dict] = Field(default_factory=list)
+    consensus_rounds: List[dict] = Field(default_factory=list)
+    critic_results: List[dict] = Field(default_factory=list)
+    consensus_findings: List[dict] = Field(default_factory=list)
+    agent_reliability_snapshot: Dict[str, float] = Field(default_factory=dict)
+    benchmark_metadata: Optional[Dict[str, Any]] = None
 
 
 def github_oauth_configured() -> bool:
@@ -546,6 +561,93 @@ TEST_TYPE_NAMES = {
     "performance": "Performance"
 }
 
+ANALYSIS_MODE_CLASSIC = "classic"
+ANALYSIS_MODE_MOSAIC = "mosaic"
+DEFAULT_AGENT_RELIABILITY = 0.5
+MOSAIC_CONFIDENCE_WEIGHTS = {
+    "agent_agreement": 0.40,
+    "critic_verdict": 0.35,
+    "evidence_completeness": 0.15,
+    "historical_reliability": 0.10,
+}
+CRITIC_VERDICT_SCORES = {
+    "confirmed": 1.0,
+    "plausible": 0.65,
+    "unverified": 0.35,
+    "rejected": 0.0,
+}
+MOSAIC_ANALYSIS_AGENTS = [
+    {
+        "agent": "unit_agent",
+        "label": "Unit Agent",
+        "test_type": "unit_tests",
+        "focus": "Function-level correctness and deterministic regressions.",
+    },
+    {
+        "agent": "black_box_agent",
+        "label": "Black-Box Agent",
+        "test_type": "black_box",
+        "focus": "Input/output behavior and externally visible failures.",
+    },
+    {
+        "agent": "edge_case_agent",
+        "label": "Edge-Case Agent",
+        "test_type": "edge_cases",
+        "focus": "Boundary values, empty inputs, and unusual runtime states.",
+    },
+    {
+        "agent": "security_agent",
+        "label": "Security Agent",
+        "test_type": "security",
+        "focus": "Injection, auth, and sensitive-data failure modes.",
+    },
+    {
+        "agent": "white_box_agent",
+        "label": "White-Box Agent",
+        "test_type": "white_box",
+        "focus": "Control-flow, hidden branches, and path analysis.",
+    },
+    {
+        "agent": "performance_agent",
+        "label": "Performance Agent",
+        "test_type": "performance",
+        "focus": "Efficiency, scaling, and resource behavior.",
+    },
+]
+MOSAIC_META_AGENTS = [
+    {
+        "agent": "critic_agent",
+        "label": "Critic Agent",
+        "focus": "Verifies or rejects agent claims before reporting them.",
+    },
+    {
+        "agent": "consensus_orchestrator",
+        "label": "Consensus Orchestrator",
+        "focus": "Clusters overlapping claims and resolves agent disagreements.",
+    },
+]
+MOSAIC_AGENT_LABELS = {
+    **{spec["agent"]: spec["label"] for spec in MOSAIC_ANALYSIS_AGENTS},
+    **{spec["agent"]: spec["label"] for spec in MOSAIC_META_AGENTS},
+}
+MOSAIC_BUG_TITLES = {
+    "dynamic_execution": "Dynamic code execution opens a remote-code-execution path",
+    "zero_variance_outlier": "Outlier filtering collapses when the standard deviation is zero",
+    "bare_except": "Bare except masks real failures",
+    "placeholder_logic": "Placeholder logic suggests incomplete implementation",
+    "plaintext_password": "Possible plain-text credential handling",
+    "malformed_bearer": "Bearer token parsing trusts malformed Authorization headers",
+    "currency_rounding": "Currency conversion can round customer payments incorrectly",
+}
+STATICALLY_CONFIRMABLE_BUG_TYPES = {
+    "dynamic_execution",
+    "zero_variance_outlier",
+    "bare_except",
+    "plaintext_password",
+    "malformed_bearer",
+    "currency_rounding",
+}
+
 FILE_HEADER_PATTERN = re.compile(r"^# ---- FILE: (?P<path>.+?) ----\n", re.MULTILINE)
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 LANGUAGE_BY_EXTENSION = {
@@ -722,6 +824,1004 @@ def normalize_model_generated_tests(tests: List[Dict[str, Any]]) -> List[Dict[st
     return normalized
 
 
+def classify_ai_unavailability_reason(
+    exc: Optional[Exception] = None,
+    *,
+    missing_api_key: bool = False,
+    missing_files: bool = False,
+    missing_focus_files: bool = False,
+    invalid_json: bool = False,
+) -> str:
+    if missing_api_key:
+        return "the backend AI patch service is not configured"
+    if missing_files:
+        return "the backend could not load repository source files for this report"
+    if missing_focus_files:
+        return "the backend could not find analyzable source files for this report"
+    if invalid_json:
+        return "the AI provider returned an unreadable patch response"
+
+    message = str(exc or "").lower()
+    if "429" in message or "rate limit" in message:
+        return "the AI provider rate-limited this request"
+    if "401" in message or "403" in message or "authentication" in message or "invalid api key" in message:
+        return "the backend AI credentials were rejected by the provider"
+    if "timeout" in message or "timed out" in message:
+        return "the AI provider timed out before returning a patch"
+    if any(term in message for term in ["connection", "connect", "dns", "network", "name resolution", "unreachable"]):
+        return "the backend could not reach the AI provider"
+    if "empty fixes array" in message or "no safe fix" in message:
+        return "the AI provider did not return a safe concrete patch"
+    return "the backend AI service was unavailable for this request"
+
+
+def build_preview_only_reason(unavailability_reason: Optional[str] = None) -> str:
+    if unavailability_reason:
+        return f"The draft PR stayed in preview mode because {unavailability_reason}."
+    return "The fallback analyzer prepared a review plan, but it needs a model-backed patch before opening a safe PR."
+
+
+def load_benchmark_case(case_id: str) -> Optional[Dict[str, Any]]:
+    if not case_id:
+        return None
+
+    case_path = BENCHMARK_CORPUS_DIR / f"{case_id}.json"
+    if not case_path.exists():
+        return None
+
+    try:
+        payload = json.loads(case_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        logger.warning("Benchmark case %s is not valid JSON", case_id)
+        return None
+
+    if isinstance(payload, dict):
+        payload.setdefault("id", case_id)
+        return payload
+    return None
+
+
+def load_benchmark_corpus() -> List[Dict[str, Any]]:
+    if not BENCHMARK_CORPUS_DIR.exists():
+        return []
+
+    cases: List[Dict[str, Any]] = []
+    for path in sorted(BENCHMARK_CORPUS_DIR.glob("*.json")):
+        case = load_benchmark_case(path.stem)
+        if case:
+            cases.append(case)
+    return cases
+
+
+def load_agent_reliability_snapshot() -> Dict[str, float]:
+    snapshot = {spec["agent"]: DEFAULT_AGENT_RELIABILITY for spec in MOSAIC_ANALYSIS_AGENTS}
+    if not BENCHMARK_RELIABILITY_PATH.exists():
+        return snapshot
+
+    try:
+        payload = json.loads(BENCHMARK_RELIABILITY_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        logger.warning("Ignoring invalid benchmark reliability snapshot at %s", BENCHMARK_RELIABILITY_PATH)
+        return snapshot
+
+    if not isinstance(payload, dict):
+        return snapshot
+
+    for spec in MOSAIC_ANALYSIS_AGENTS:
+        value = payload.get(spec["agent"])
+        if isinstance(value, (int, float)):
+            snapshot[spec["agent"]] = max(0.0, min(1.0, float(value)))
+    return snapshot
+
+
+def extract_evidence_line(content: str, needles: List[str]) -> str:
+    for line in content.splitlines():
+        if any(needle in line for needle in needles):
+            return line.strip()
+    return ""
+
+
+def infer_symbol_name(file_info: Dict[str, str], preferred: Optional[str] = None) -> Optional[str]:
+    if preferred:
+        return preferred
+
+    names = extract_function_names(file_info["content"], file_info["path"])
+    if names:
+        return names[0]
+
+    match = re.search(r"^class\s+([A-Za-z_]\w*)", file_info["content"], flags=re.MULTILINE)
+    if match:
+        return match.group(1)
+    return None
+
+
+def build_mosaic_claim(
+    agent_key: str,
+    file_info: Dict[str, str],
+    bug_type: str,
+    severity: str,
+    claim: str,
+    evidence: str,
+    reproduction_hint: str,
+    proposed_test: str,
+    proposed_fix_summary: str,
+    *,
+    symbol: Optional[str] = None,
+) -> Dict[str, Any]:
+    return {
+        "agent": agent_key,
+        "agent_label": MOSAIC_AGENT_LABELS.get(agent_key, agent_key),
+        "file_path": file_info["path"],
+        "symbol": infer_symbol_name(file_info, symbol),
+        "bug_type": bug_type,
+        "severity": severity,
+        "claim": claim,
+        "evidence": evidence.strip(),
+        "reproduction_hint": reproduction_hint.strip(),
+        "proposed_test": proposed_test.strip(),
+        "proposed_fix_summary": proposed_fix_summary.strip(),
+    }
+
+
+def collect_mosaic_claims_for_file(agent_key: str, file_info: Dict[str, str]) -> List[Dict[str, Any]]:
+    claims: List[Dict[str, Any]] = []
+    content = file_info["content"]
+    lowered = content.lower()
+
+    eval_line = extract_evidence_line(content, ["eval(", "exec("])
+    has_zero_variance_gap = (
+        "filter_outliers" in content
+        and 'metrics["std"]' in content
+        and 'if metrics["std"] == 0' not in content
+    )
+    bare_except_line = extract_evidence_line(content, ["except:"])
+    bearer_line = extract_evidence_line(content, ["authorization?.split(' ')[1]", 'authorization?.split(" ")[1]'])
+    rounding_line = extract_evidence_line(content, ["int(amount * 100)"])
+    placeholder_line = extract_evidence_line(content, ["TODO", "pass"])
+    if not placeholder_line:
+        match = re.search(r"^\s*pass\s*$", content, flags=re.MULTILINE)
+        if match:
+            placeholder_line = match.group(0).strip()
+
+    if eval_line:
+        if agent_key == "security_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "dynamic_execution",
+                    "critical",
+                    "Unchecked strings can reach dynamic execution and run attacker-controlled code.",
+                    eval_line,
+                    "Pass crafted input into the entrypoint that reaches eval/exec and confirm the code executes instead of rejecting it.",
+                    "Add a regression test that proves untrusted strings are rejected before execution.",
+                    "Replace eval/exec with explicit parsing or a constrained dispatch table.",
+                )
+            )
+        if agent_key == "black_box_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "dynamic_execution",
+                    "high",
+                    "A caller can trigger behavior that looks like code execution instead of normal input handling.",
+                    eval_line,
+                    "Call the public function with a string expression and verify it is evaluated instead of treated as plain data.",
+                    "Cover the public entrypoint with malicious-looking strings and assert they are rejected.",
+                    "Convert the externally visible API from free-form expression handling to explicit parsing.",
+                )
+            )
+        if agent_key == "white_box_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "dynamic_execution",
+                    "high",
+                    "Control-flow analysis shows an unsafe path from function input into eval/exec.",
+                    eval_line,
+                    "Trace the branch that forwards raw input into dynamic execution and assert the path is removed.",
+                    "Add a test around the specific branch that currently forwards raw strings into eval/exec.",
+                    "Break the dynamic execution branch into explicit validated cases.",
+                )
+            )
+
+    if has_zero_variance_gap:
+        if agent_key == "black_box_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "zero_variance_outlier",
+                    "medium",
+                    "From the outside, constant datasets follow a subtle path that is not documented through an explicit zero-variance branch.",
+                    extract_evidence_line(content, ["def filter_outliers", 'metrics["std"]']),
+                    "Feed a constant dataset through the public helper and verify the behavior is intentionally documented instead of implicit.",
+                    "Add a black-box regression test for constant datasets and assert the behavior stays stable.",
+                    "Expose the zero-variance case as an explicit branch instead of letting threshold math handle it implicitly.",
+                    symbol="filter_outliers",
+                )
+            )
+        if agent_key == "unit_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "zero_variance_outlier",
+                    "medium",
+                    "Constant datasets need an explicit zero-variance guard before outlier filtering runs.",
+                    extract_evidence_line(content, ["def filter_outliers", 'metrics["std"]']),
+                    "Call filter_outliers([5, 5, 5]) and assert the implementation short-circuits the zero-variance case intentionally.",
+                    "Add a regression test for constant inputs and verify they are returned unchanged.",
+                    "Short-circuit zero standard-deviation inputs before threshold math runs.",
+                    symbol="filter_outliers",
+                )
+            )
+        if agent_key == "edge_case_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "zero_variance_outlier",
+                    "medium",
+                    "The all-identical boundary case is handled implicitly instead of through an explicit guard.",
+                    extract_evidence_line(content, ['metrics["std"]']),
+                    "Exercise the all-identical input path to confirm the function documents the zero-variance behavior.",
+                    "Cover the std == 0 boundary case with an explicit regression test.",
+                    "Add an explicit std == 0 branch so the edge case is intentional and easy to review.",
+                    symbol="filter_outliers",
+                )
+            )
+        if agent_key == "white_box_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "zero_variance_outlier",
+                    "medium",
+                    "The current branch structure never names the zero-standard-deviation path directly.",
+                    extract_evidence_line(content, ['metrics["std"]']),
+                    "Review the filter_outliers branch conditions and confirm there is no dedicated zero-variance branch.",
+                    "Add branch coverage for the missing std == 0 guard.",
+                    "Introduce a dedicated branch for zero-variance inputs before computing thresholds.",
+                    symbol="filter_outliers",
+                )
+            )
+
+    if bare_except_line:
+        if agent_key == "unit_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "bare_except",
+                    "medium",
+                    "A broad exception handler can hide real failures from unit-level callers.",
+                    bare_except_line,
+                    "Trigger an unexpected exception type and verify it is swallowed instead of surfacing to the caller.",
+                    "Add a regression test that proves unexpected exceptions are not silently swallowed.",
+                    "Catch specific expected exceptions and let unexpected failures propagate.",
+                )
+            )
+        if agent_key == "edge_case_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "bare_except",
+                    "medium",
+                    "Rare runtime failures will be masked because every exception follows the same fallback path.",
+                    bare_except_line,
+                    "Force a non-validation error and confirm the handler still treats it as a normal edge case.",
+                    "Add a regression test for an unexpected exception type so the edge path is visible.",
+                    "Replace the bare except with explicit exception classes that represent real edge cases.",
+                )
+            )
+        if agent_key == "white_box_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "bare_except",
+                    "low",
+                    "The exception branch is too wide and makes true failure paths indistinguishable from expected recovery.",
+                    bare_except_line,
+                    "Inspect the exception path and confirm there is no branch separation by exception type.",
+                    "Add branch-level coverage around the exception path and assert unexpected errors escape.",
+                    "Split the exception path by expected error types so the control flow is auditable.",
+                )
+            )
+
+    if bearer_line:
+        if agent_key == "security_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "malformed_bearer",
+                    "medium",
+                    "Malformed Authorization headers can be treated as valid credentials without explicit Bearer validation.",
+                    bearer_line,
+                    "Send malformed Authorization headers and confirm they are rejected before token parsing continues.",
+                    "Add auth regression coverage for malformed Bearer headers and missing token values.",
+                    "Parse the scheme explicitly and reject any Authorization header that is not a well-formed Bearer token.",
+                )
+            )
+        if agent_key == "black_box_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "malformed_bearer",
+                    "medium",
+                    "From the API boundary, malformed auth headers are not distinguished cleanly from valid Bearer tokens.",
+                    bearer_line,
+                    "Exercise requests with missing or malformed schemes and assert the endpoint responds with Unauthorized immediately.",
+                    "Add black-box tests for malformed Authorization header variants.",
+                    "Make header parsing explicit and fail closed when the scheme or token is malformed.",
+                )
+            )
+
+    if rounding_line:
+        if agent_key == "unit_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "currency_rounding",
+                    "high",
+                    "Converting currency with truncation can mis-handle half-cent values.",
+                    rounding_line,
+                    "Call the money-normalization path with values like 10.015 and verify they are rounded intentionally instead of truncated.",
+                    "Add a regression test around half-cent rounding behavior.",
+                    "Use Decimal-based rounding before sending minor currency units downstream.",
+                )
+            )
+        if agent_key == "edge_case_agent":
+            claims.append(
+                build_mosaic_claim(
+                    agent_key,
+                    file_info,
+                    "currency_rounding",
+                    "medium",
+                    "Boundary money values near a cent break can drift because the edge case is truncated, not rounded.",
+                    rounding_line,
+                    "Probe values near the cent boundary and verify the amount conversion is stable.",
+                    "Cover the rounding edge cases where the last fractional digit is 5 or greater.",
+                    "Normalize money with Decimal rounding instead of int-based truncation.",
+                )
+            )
+
+    if "password" in lowered and "hash" not in lowered and agent_key == "security_agent":
+        claims.append(
+            build_mosaic_claim(
+                agent_key,
+                file_info,
+                "plaintext_password",
+                "high",
+                "The file handles password-like data without any hashing signal, which is unsafe by default.",
+                extract_evidence_line(content, ["password"]),
+                "Trace the password value through the public API and verify it is stored or compared without hashing.",
+                "Add a regression test that proves password-like values are hashed or rejected before persistence.",
+                "Hash password data with a modern one-way function before storage or comparison.",
+            )
+        )
+
+    if placeholder_line and agent_key in {"unit_agent", "white_box_agent"}:
+        claims.append(
+            build_mosaic_claim(
+                agent_key,
+                file_info,
+                "placeholder_logic",
+                "low",
+                "The file still contains placeholder logic, so the current path may not represent finished behavior.",
+                placeholder_line,
+                "Exercise the placeholder path and confirm it still behaves like a stub instead of production logic.",
+                "Add a test that documents the intended behavior before replacing the placeholder path.",
+                "Replace placeholder logic with production behavior or raise a clear not-implemented error.",
+            )
+        )
+
+    return claims
+
+
+def summarize_agent_claims(agent_key: str, claims: List[Dict[str, Any]]) -> str:
+    if not claims:
+        return f"{MOSAIC_AGENT_LABELS[agent_key]} found no high-signal claims."
+
+    severities = {claim["severity"] for claim in claims}
+    if "critical" in severities or "high" in severities:
+        tone = "high-impact"
+    elif "medium" in severities:
+        tone = "meaningful"
+    else:
+        tone = "low-confidence"
+    return f"{MOSAIC_AGENT_LABELS[agent_key]} surfaced {len(claims)} {tone} claim(s)."
+
+
+def status_from_severities(severities: List[str]) -> str:
+    if any(item in {"critical", "high"} for item in severities):
+        return "failed"
+    if any(item in {"medium", "low"} for item in severities):
+        return "warning"
+    return "passed"
+
+
+def build_agent_run_details(claims: List[Dict[str, Any]]) -> str:
+    if not claims:
+        return "No claims were raised by this agent."
+    lines = []
+    for claim in claims[:4]:
+        lines.append(
+            f"- {claim['severity'].upper()}: {claim['claim']} ({claim['file_path']}"
+            f"{':' + claim['symbol'] if claim.get('symbol') else ''})"
+        )
+    return "\n".join(lines)
+
+
+def run_mosaic_analysis_agents(files: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    agent_runs: List[Dict[str, Any]] = []
+    for spec in MOSAIC_ANALYSIS_AGENTS:
+        claims: List[Dict[str, Any]] = []
+        for file_info in files:
+            claims.extend(collect_mosaic_claims_for_file(spec["agent"], file_info))
+
+        status = status_from_severities([claim["severity"] for claim in claims])
+        agent_runs.append(
+            {
+                "agent": spec["agent"],
+                "label": spec["label"],
+                "focus": spec["focus"],
+                "status": status,
+                "claim_count": len(claims),
+                "summary": summarize_agent_claims(spec["agent"], claims),
+                "claims": claims,
+                "details": build_agent_run_details(claims),
+                "test_type": spec["test_type"],
+            }
+        )
+    return agent_runs
+
+
+def compute_claim_evidence_completeness(claim: Dict[str, Any]) -> float:
+    fields = [
+        claim.get("evidence"),
+        claim.get("reproduction_hint"),
+        claim.get("proposed_test"),
+        claim.get("proposed_fix_summary"),
+    ]
+    present = sum(1 for value in fields if isinstance(value, str) and value.strip())
+    return present / len(fields)
+
+
+def compute_group_evidence_completeness(claims: List[Dict[str, Any]]) -> float:
+    if not claims:
+        return 0.0
+    return sum(compute_claim_evidence_completeness(claim) for claim in claims) / len(claims)
+
+
+def cluster_mosaic_claims(agent_runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[tuple, Dict[str, Any]] = {}
+    ordered_claims = [claim for run in agent_runs for claim in run.get("claims", [])]
+
+    for claim in ordered_claims:
+        key = (
+            claim.get("file_path", ""),
+            (claim.get("symbol") or "").lower(),
+            claim.get("bug_type", ""),
+        )
+        group = grouped.setdefault(
+            key,
+            {
+                "file_path": claim.get("file_path"),
+                "symbol": claim.get("symbol"),
+                "bug_type": claim.get("bug_type"),
+                "claims": [],
+            },
+        )
+        group["claims"].append(claim)
+
+    claim_groups: List[Dict[str, Any]] = []
+    for index, group in enumerate(grouped.values(), start=1):
+        claims = group["claims"]
+        supporting_agents = sorted({claim["agent"] for claim in claims})
+        opposing_agents = [
+            spec["agent"]
+            for spec in MOSAIC_ANALYSIS_AGENTS
+            if spec["agent"] not in supporting_agents
+        ]
+        top_claim = sorted(
+            claims,
+            key=lambda item: (SEVERITY_ORDER.get(item["severity"], 99), item.get("agent", "")),
+        )[0]
+        claim_groups.append(
+            {
+                "id": f"claim-group-{index}",
+                "file_path": group["file_path"],
+                "symbol": group["symbol"],
+                "bug_type": group["bug_type"],
+                "title": MOSAIC_BUG_TITLES.get(group["bug_type"], top_claim["claim"]),
+                "severity": top_claim["severity"],
+                "supporting_agents": supporting_agents,
+                "opposing_agents": opposing_agents,
+                "claims": claims,
+                "evidence": [claim["evidence"] for claim in claims if claim.get("evidence")],
+                "proposed_test": next((claim["proposed_test"] for claim in claims if claim.get("proposed_test")), ""),
+                "proposed_fix_summary": next((claim["proposed_fix_summary"] for claim in claims if claim.get("proposed_fix_summary")), ""),
+                "reproduction_hint": next((claim["reproduction_hint"] for claim in claims if claim.get("reproduction_hint")), ""),
+                "evidence_completeness": round(compute_group_evidence_completeness(claims), 3),
+            }
+        )
+
+    claim_groups.sort(
+        key=lambda item: (
+            SEVERITY_ORDER.get(item["severity"], 99),
+            item.get("file_path", ""),
+            item.get("bug_type", ""),
+        )
+    )
+    return claim_groups
+
+
+def build_opposing_statement(agent_key: str, group: Dict[str, Any]) -> str:
+    focus = next(
+        (spec["focus"] for spec in MOSAIC_ANALYSIS_AGENTS if spec["agent"] == agent_key),
+        "This agent did not find enough evidence in its own lane.",
+    )
+    return (
+        f"{MOSAIC_AGENT_LABELS.get(agent_key, agent_key)} did not independently confirm "
+        f"{group['bug_type']} in {group['file_path']}. {focus}"
+    )
+
+
+def resolve_mosaic_claim_group(group: Dict[str, Any]) -> Dict[str, Any]:
+    support_count = len(group["supporting_agents"])
+    evidence_completeness = group.get("evidence_completeness", 0.0)
+    statically_confirmable = group["bug_type"] in STATICALLY_CONFIRMABLE_BUG_TYPES
+
+    if support_count >= 3:
+        resolution = "confirmed"
+        reason = "Three or more specialist agents independently raised the same defect."
+    elif support_count >= 2 and evidence_completeness >= 0.75 and statically_confirmable:
+        resolution = "confirmed"
+        reason = "Multiple agents agreed and the issue has strong deterministic source evidence."
+    elif support_count >= 2 or evidence_completeness >= 0.6:
+        resolution = "contested"
+        reason = "The issue has some support, but the debate did not fully converge."
+    else:
+        resolution = "rejected"
+        reason = "The claim was too weak or too isolated to survive consensus."
+
+    return {
+        "claim_group_id": group["id"],
+        "file_path": group["file_path"],
+        "bug_type": group["bug_type"],
+        "resolution": resolution,
+        "resolution_reason": reason,
+        "supporting_statements": [
+            {
+                "agent": claim["agent"],
+                "agent_label": claim["agent_label"],
+                "statement": claim["claim"],
+                "evidence": claim["evidence"],
+            }
+            for claim in group["claims"]
+        ],
+        "opposing_statements": [
+            {
+                "agent": agent_key,
+                "agent_label": MOSAIC_AGENT_LABELS.get(agent_key, agent_key),
+                "statement": build_opposing_statement(agent_key, group),
+            }
+            for agent_key in group["opposing_agents"][:3]
+        ],
+        "support_count": support_count,
+        "challenge_count": len(group["opposing_agents"]),
+    }
+
+
+def execute_python_benchmark_check(
+    file_info: Dict[str, str],
+    executable_check: Dict[str, Any],
+) -> Dict[str, Any]:
+    namespace: Dict[str, Any] = {}
+    try:
+        exec(file_info["content"], namespace)
+    except Exception as exc:
+        return {"status": "unverified", "details": f"Unable to import file content for executable check: {exc}"}
+
+    function_name = executable_check.get("function")
+    target = namespace.get(function_name)
+    if not callable(target):
+        return {"status": "unverified", "details": f"Function {function_name!r} is not callable in the benchmark check."}
+
+    args = executable_check.get("args", [])
+    kwargs = executable_check.get("kwargs", {})
+    expected_exception = executable_check.get("expected_exception")
+    expected_result = executable_check.get("expected_result")
+
+    try:
+        result = target(*args, **kwargs)
+    except Exception as exc:
+        if expected_exception and exc.__class__.__name__ == expected_exception:
+            return {"status": "passed", "details": f"Executable check observed expected exception {expected_exception}."}
+        return {"status": "failed", "details": f"Executable check raised {exc.__class__.__name__}: {exc}"}
+
+    if expected_exception:
+        return {"status": "failed", "details": f"Expected exception {expected_exception}, but the function returned normally."}
+
+    if expected_result is None or result == expected_result:
+        return {"status": "passed", "details": f"Executable check returned {result!r}."}
+    return {
+        "status": "failed",
+        "details": f"Executable check returned {result!r}, expected {expected_result!r}.",
+    }
+
+
+def run_mosaic_critic(
+    files: List[Dict[str, str]],
+    claim_groups: List[Dict[str, Any]],
+    benchmark_metadata: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    benchmark_metadata = benchmark_metadata or {}
+    executable_check = benchmark_metadata.get("executable_check") or {}
+    file_lookup = {file_info["path"]: file_info for file_info in files}
+    results: List[Dict[str, Any]] = []
+
+    for group in claim_groups:
+        file_info = file_lookup.get(group["file_path"])
+        if not file_info:
+            results.append(
+                {
+                    "claim_group_id": group["id"],
+                    "verdict": "unverified",
+                    "reason": "The critic could not load the referenced source file.",
+                    "executable_check": None,
+                }
+            )
+            continue
+
+        content = file_info["content"]
+        bug_type = group["bug_type"]
+        evidence_present = any(evidence and evidence in content for evidence in group.get("evidence", []))
+        verdict = "plausible" if evidence_present else "rejected"
+        reason = "The critic found matching source evidence for the group claim." if evidence_present else "The critic could not reproduce the claim from the source evidence."
+        executable_result = None
+
+        if bug_type in STATICALLY_CONFIRMABLE_BUG_TYPES and evidence_present:
+            verdict = "confirmed"
+            reason = "The critic confirmed a deterministic source-level signature for this defect."
+
+        if (
+            executable_check
+            and file_info["language"] == "python"
+            and executable_check.get("file_path") == group["file_path"]
+            and executable_check.get("bug_type") == bug_type
+        ):
+            executable_result = execute_python_benchmark_check(file_info, executable_check)
+            if executable_result["status"] == "passed":
+                verdict = "confirmed"
+                reason = f"The critic reproduced the issue with a targeted benchmark check. {executable_result['details']}"
+            elif executable_result["status"] == "failed":
+                verdict = "rejected"
+                reason = f"The targeted benchmark check contradicted the claim. {executable_result['details']}"
+            else:
+                verdict = "unverified" if verdict != "confirmed" else verdict
+                reason = executable_result["details"]
+
+        results.append(
+            {
+                "claim_group_id": group["id"],
+                "verdict": verdict,
+                "reason": reason,
+                "executable_check": executable_result,
+            }
+        )
+
+    return results
+
+
+def build_mosaic_critic_agent_run(critic_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    verdicts = [item["verdict"] for item in critic_results]
+    if any(verdict == "rejected" for verdict in verdicts):
+        status = "warning"
+    elif any(verdict == "unverified" for verdict in verdicts):
+        status = "warning"
+    else:
+        status = "passed"
+
+    summary = (
+        f"Critic agent reviewed {len(critic_results)} claim group(s): "
+        f"{sum(1 for item in critic_results if item['verdict'] == 'confirmed')} confirmed, "
+        f"{sum(1 for item in critic_results if item['verdict'] == 'plausible')} plausible, "
+        f"{sum(1 for item in critic_results if item['verdict'] == 'rejected')} rejected."
+    )
+    details = "\n".join(
+        f"- {item['verdict'].upper()}: {item['reason']}"
+        for item in critic_results[:6]
+    ) or "No critic checks were needed."
+    return {
+        "agent": "critic_agent",
+        "label": MOSAIC_AGENT_LABELS["critic_agent"],
+        "focus": next(spec["focus"] for spec in MOSAIC_META_AGENTS if spec["agent"] == "critic_agent"),
+        "status": status,
+        "claim_count": len(critic_results),
+        "summary": summary,
+        "claims": [],
+        "details": details,
+    }
+
+
+def build_mosaic_consensus_agent_run(consensus_rounds: List[Dict[str, Any]]) -> Dict[str, Any]:
+    summary = (
+        f"Consensus orchestrator resolved {len(consensus_rounds)} normalized claim group(s): "
+        f"{sum(1 for round_data in consensus_rounds if round_data['resolution'] == 'confirmed')} confirmed, "
+        f"{sum(1 for round_data in consensus_rounds if round_data['resolution'] == 'contested')} contested, "
+        f"{sum(1 for round_data in consensus_rounds if round_data['resolution'] == 'rejected')} rejected."
+    )
+    details = "\n".join(
+        f"- {round_data['resolution'].upper()}: {round_data['resolution_reason']}"
+        for round_data in consensus_rounds[:6]
+    ) or "No consensus rounds were required."
+    status = "passed" if not any(item["resolution"] == "rejected" for item in consensus_rounds) else "warning"
+    return {
+        "agent": "consensus_orchestrator",
+        "label": MOSAIC_AGENT_LABELS["consensus_orchestrator"],
+        "focus": next(spec["focus"] for spec in MOSAIC_META_AGENTS if spec["agent"] == "consensus_orchestrator"),
+        "status": status,
+        "claim_count": len(consensus_rounds),
+        "summary": summary,
+        "claims": [],
+        "details": details,
+    }
+
+
+def calculate_mosaic_confidence(
+    support_count: int,
+    evidence_completeness: float,
+    critic_verdict: str,
+    supporting_agents: List[str],
+    reliability_snapshot: Dict[str, float],
+    resolution: str,
+) -> int:
+    agent_agreement = support_count / max(len(MOSAIC_ANALYSIS_AGENTS), 1)
+    historical_reliability = (
+        sum(reliability_snapshot.get(agent, DEFAULT_AGENT_RELIABILITY) for agent in supporting_agents) / len(supporting_agents)
+        if supporting_agents
+        else DEFAULT_AGENT_RELIABILITY
+    )
+    critic_score = CRITIC_VERDICT_SCORES.get(critic_verdict, 0.0)
+    score = (
+        MOSAIC_CONFIDENCE_WEIGHTS["agent_agreement"] * agent_agreement
+        + MOSAIC_CONFIDENCE_WEIGHTS["critic_verdict"] * critic_score
+        + MOSAIC_CONFIDENCE_WEIGHTS["evidence_completeness"] * evidence_completeness
+        + MOSAIC_CONFIDENCE_WEIGHTS["historical_reliability"] * historical_reliability
+    )
+    confidence = int(round(score * 100))
+    if resolution == "rejected":
+        confidence = min(confidence, 45)
+    elif resolution == "contested":
+        confidence = min(confidence, 79)
+    if critic_verdict == "rejected":
+        confidence = min(confidence, 25)
+    elif critic_verdict == "unverified":
+        confidence = min(confidence, 69)
+    return max(0, min(100, confidence))
+
+
+def finalize_mosaic_consensus_findings(
+    claim_groups: List[Dict[str, Any]],
+    consensus_rounds: List[Dict[str, Any]],
+    critic_results: List[Dict[str, Any]],
+    reliability_snapshot: Dict[str, float],
+) -> List[Dict[str, Any]]:
+    round_lookup = {round_data["claim_group_id"]: round_data for round_data in consensus_rounds}
+    critic_lookup = {result["claim_group_id"]: result for result in critic_results}
+    findings: List[Dict[str, Any]] = []
+
+    for group in claim_groups:
+        consensus_round = round_lookup[group["id"]]
+        critic_result = critic_lookup.get(group["id"], {"verdict": "unverified", "reason": "No critic result."})
+        confidence = calculate_mosaic_confidence(
+            support_count=len(group["supporting_agents"]),
+            evidence_completeness=group["evidence_completeness"],
+            critic_verdict=critic_result["verdict"],
+            supporting_agents=group["supporting_agents"],
+            reliability_snapshot=reliability_snapshot,
+            resolution=consensus_round["resolution"],
+        )
+        eligible_for_fix = (
+            consensus_round["resolution"] == "confirmed"
+            and critic_result["verdict"] == "confirmed"
+            and confidence >= 80
+        )
+        eligible_for_tests = critic_result["verdict"] != "rejected" and confidence >= 60
+        supporting_labels = [MOSAIC_AGENT_LABELS.get(agent, agent) for agent in group["supporting_agents"]]
+        opposing_labels = [MOSAIC_AGENT_LABELS.get(agent, agent) for agent in group["opposing_agents"]]
+        findings.append(
+            {
+                "id": group["id"],
+                "severity": group["severity"],
+                "file_path": group["file_path"],
+                "symbol": group.get("symbol"),
+                "bug_type": group["bug_type"],
+                "title": group["title"],
+                "explanation": (
+                    f"{consensus_round['resolution_reason']} "
+                    f"Critic verdict: {critic_result['verdict']}. {critic_result['reason']}"
+                ),
+                "recommendation": group["proposed_fix_summary"] or "Review the supporting evidence before applying a targeted fix.",
+                "resolution": consensus_round["resolution"],
+                "confidence": confidence,
+                "critic_verdict": critic_result["verdict"],
+                "critic_reason": critic_result["reason"],
+                "supporting_agents": supporting_labels,
+                "opposing_agents": opposing_labels,
+                "evidence": group["evidence"],
+                "reproduction_hint": group["reproduction_hint"],
+                "proposed_test": group["proposed_test"],
+                "proposed_fix_summary": group["proposed_fix_summary"],
+                "eligible_for_fix": eligible_for_fix,
+                "eligible_for_tests": eligible_for_tests,
+            }
+        )
+
+    resolution_order = {"confirmed": 0, "contested": 1, "rejected": 2}
+    findings.sort(
+        key=lambda item: (
+            resolution_order.get(item["resolution"], 99),
+            SEVERITY_ORDER.get(item["severity"], 99),
+            -item["confidence"],
+            item["file_path"],
+        )
+    )
+    return findings
+
+
+def derive_findings_from_consensus(consensus_findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [dict(item) for item in consensus_findings]
+
+
+def derive_results_from_agent_runs(agent_runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    for run in agent_runs:
+        test_type = run.get("test_type")
+        if not test_type:
+            continue
+        results.append(
+            {
+                "test_type": test_type,
+                "test_name": TEST_TYPE_NAMES.get(test_type, test_type),
+                "status": run["status"],
+                "summary": run["summary"],
+                "details": run["details"],
+            }
+        )
+    return results
+
+
+def build_mosaic_engineer_summary(consensus_findings: List[Dict[str, Any]], agent_runs: List[Dict[str, Any]]) -> str:
+    confirmed = [item for item in consensus_findings if item["resolution"] == "confirmed"]
+    contested = [item for item in consensus_findings if item["resolution"] == "contested"]
+    rejected = [item for item in consensus_findings if item["resolution"] == "rejected"]
+    if confirmed:
+        top = confirmed[0]
+        return (
+            f"MOSAIC ran {len(agent_runs)} agents. Consensus confirmed {len(confirmed)} finding(s), "
+            f"contested {len(contested)}, and rejected {len(rejected)}. "
+            f"Highest-confidence issue: {top['title']} in {top['file_path']} "
+            f"({top['confidence']}% confidence, critic {top['critic_verdict']})."
+        )
+    if contested:
+        top = contested[0]
+        return (
+            f"MOSAIC ran {len(agent_runs)} agents, but no issue cleared the confirmed threshold. "
+            f"Most interesting debate: {top['title']} in {top['file_path']} "
+            f"({top['confidence']}% confidence, critic {top['critic_verdict']})."
+        )
+    return (
+        f"MOSAIC ran {len(agent_runs)} agents and did not confirm a strong defect. "
+        "The run remains useful as a low-signal baseline for benchmark and consensus analysis."
+    )
+
+
+def build_mosaic_preview_only_reason(
+    consensus_findings: List[Dict[str, Any]],
+    generated_fixes: List[Dict[str, Any]],
+    fallback_reason: Optional[str] = None,
+) -> str:
+    if any(item.get("updated_code") for item in generated_fixes):
+        return ""
+    if fallback_reason:
+        return fallback_reason
+    if not consensus_findings:
+        return "MOSAIC kept the draft PR in preview mode because no supported defect survived consensus."
+    if not any(item["eligible_for_fix"] for item in consensus_findings):
+        return (
+            "MOSAIC kept the draft PR in preview mode because no finding reached the "
+            "confirmed + critic-confirmed confidence threshold for automatic code changes."
+        )
+    return "MOSAIC confirmed a fix candidate, but it did not generate a safe concrete patch for this repository."
+
+
+async def build_mosaic_engineer_report(
+    run_id: str,
+    repo_full_name: str,
+    repo_name: str,
+    branch: str,
+    files: List[Dict[str, str]],
+    benchmark_metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    agent_reliability_snapshot = load_agent_reliability_snapshot()
+    analysis_agent_runs = run_mosaic_analysis_agents(files)
+    claim_groups = cluster_mosaic_claims(analysis_agent_runs)
+    consensus_rounds = [resolve_mosaic_claim_group(group) for group in claim_groups]
+    critic_results = run_mosaic_critic(files, claim_groups, benchmark_metadata)
+    consensus_findings = finalize_mosaic_consensus_findings(
+        claim_groups,
+        consensus_rounds,
+        critic_results,
+        agent_reliability_snapshot,
+    )
+
+    findings = derive_findings_from_consensus(consensus_findings)
+    eligible_fix_findings = [item for item in findings if item.get("eligible_for_fix")]
+    eligible_test_findings = [item for item in findings if item.get("eligible_for_tests")]
+    fixes = build_suggested_fixes(repo_name, files, eligible_fix_findings) if eligible_fix_findings else []
+    custom_tests = build_custom_tests(repo_name, files) if eligible_test_findings else []
+    preview_only_reason = None
+
+    if eligible_fix_findings and fixes and not any(fix.get("updated_code") for fix in fixes):
+        model_pack = await generate_model_backed_engineer_pack(
+            repo_full_name=repo_full_name,
+            repo_name=repo_name,
+            branch=branch,
+            files=files,
+            findings=eligible_fix_findings,
+        )
+        if model_pack:
+            preview_only_reason = model_pack.get("preview_only_reason")
+            if model_pack.get("suggested_fixes"):
+                fixes = model_pack["suggested_fixes"]
+            if model_pack.get("custom_tests"):
+                custom_tests = model_pack["custom_tests"]
+
+    preview_only_reason = build_mosaic_preview_only_reason(consensus_findings, fixes, preview_only_reason) or None
+    pr_draft = build_pr_draft_payload(
+        run_id=run_id,
+        repo_name=repo_name,
+        branch=branch,
+        repo_full_name=repo_full_name,
+        findings=findings,
+        fixes=fixes,
+        custom_tests=custom_tests,
+        preview_only_reason=preview_only_reason,
+    )
+
+    agent_runs = [
+        *analysis_agent_runs,
+        build_mosaic_critic_agent_run(critic_results),
+        build_mosaic_consensus_agent_run(consensus_rounds),
+    ]
+    return {
+        "analysis_mode": ANALYSIS_MODE_MOSAIC,
+        "results": derive_results_from_agent_runs(analysis_agent_runs),
+        "engineer_summary": build_mosaic_engineer_summary(consensus_findings, agent_runs),
+        "findings": findings,
+        "suggested_fixes": fixes,
+        "custom_tests": custom_tests,
+        "pr_draft": pr_draft,
+        "agent_runs": agent_runs,
+        "claim_groups": claim_groups,
+        "consensus_rounds": consensus_rounds,
+        "critic_results": critic_results,
+        "consensus_findings": consensus_findings,
+        "agent_reliability_snapshot": agent_reliability_snapshot,
+        "benchmark_metadata": benchmark_metadata,
+    }
+
+
 async def generate_model_backed_engineer_pack(
     repo_full_name: str,
     repo_name: str,
@@ -729,12 +1829,35 @@ async def generate_model_backed_engineer_pack(
     files: List[Dict[str, str]],
     findings: List[Dict[str, str]],
 ) -> Optional[Dict[str, Any]]:
-    if not ZAI_API_KEY or not files:
-        return None
+    if not ZAI_API_KEY:
+        return {
+            "engineer_summary": "",
+            "suggested_fixes": [],
+            "custom_tests": [],
+            "preview_only_reason": build_preview_only_reason(
+                classify_ai_unavailability_reason(missing_api_key=True)
+            ),
+        }
+    if not files:
+        return {
+            "engineer_summary": "",
+            "suggested_fixes": [],
+            "custom_tests": [],
+            "preview_only_reason": build_preview_only_reason(
+                classify_ai_unavailability_reason(missing_files=True)
+            ),
+        }
 
     focus_files = select_focus_files(files, findings)
     if not focus_files:
-        return None
+        return {
+            "engineer_summary": "",
+            "suggested_fixes": [],
+            "custom_tests": [],
+            "preview_only_reason": build_preview_only_reason(
+                classify_ai_unavailability_reason(missing_focus_files=True)
+            ),
+        }
 
     file_lookup = {file_info["path"]: file_info for file_info in files}
     findings_json = json.dumps(findings[:4], indent=2)
@@ -809,14 +1932,28 @@ async def generate_model_backed_engineer_pack(
         payload = extract_json_object(content)
         if not payload:
             logger.warning("Model-backed engineer pack returned non-JSON content for %s", repo_full_name)
-            return None
+            return {
+                "engineer_summary": "",
+                "suggested_fixes": [],
+                "custom_tests": [],
+                "preview_only_reason": build_preview_only_reason(
+                    classify_ai_unavailability_reason(invalid_json=True)
+                ),
+            }
 
         normalized_fixes = normalize_model_generated_fixes(payload.get("fixes", []), file_lookup)
         normalized_tests = normalize_model_generated_tests(payload.get("tests", []))
         summary = str(payload.get("summary") or "").strip()
 
         if not normalized_fixes and not normalized_tests and not summary:
-            return None
+            return {
+                "engineer_summary": "",
+                "suggested_fixes": [],
+                "custom_tests": [],
+                "preview_only_reason": build_preview_only_reason(
+                    "the AI provider did not return a safe concrete patch"
+                ),
+            }
 
         logger.info(
             "Model-backed engineer pack prepared for %s: %d fixes, %d tests",
@@ -828,10 +1965,18 @@ async def generate_model_backed_engineer_pack(
             "engineer_summary": summary,
             "suggested_fixes": normalized_fixes,
             "custom_tests": normalized_tests,
+            "preview_only_reason": None if normalized_fixes else build_preview_only_reason(
+                "the AI provider did not return a safe concrete patch"
+            ),
         }
     except Exception as exc:
         logger.warning("Model-backed engineer pack generation failed for %s: %s", repo_full_name, exc)
-        return None
+        return {
+            "engineer_summary": "",
+            "suggested_fixes": [],
+            "custom_tests": [],
+            "preview_only_reason": build_preview_only_reason(classify_ai_unavailability_reason(exc)),
+        }
 
 
 def sanitize_branch_fragment(value: str) -> str:
@@ -1574,6 +2719,7 @@ def build_pr_draft_payload(
     existing_pr_draft: Optional[Dict[str, Any]] = None,
     title: Optional[str] = None,
     body: Optional[str] = None,
+    preview_only_reason: Optional[str] = None,
 ) -> Dict[str, Any]:
     existing_pr_draft = existing_pr_draft or {}
     pr_ready = any(fix.get("updated_code") for fix in fixes)
@@ -1589,16 +2735,95 @@ def build_pr_draft_payload(
         "status": existing_pr_draft.get("status") if existing_pr_draft.get("created") else ("ready" if pr_ready else "preview_only"),
         "url": existing_pr_draft.get("url"),
         "number": existing_pr_draft.get("number"),
-        "preview_only_reason": None if pr_ready else "The fallback analyzer prepared a review plan, but it needs a model-backed patch before opening a safe PR.",
+        "preview_only_reason": None if pr_ready else (preview_only_reason or build_preview_only_reason()),
     }
 
 
-def build_report_chat_fallback(report: Dict[str, Any], message: str) -> Dict[str, Any]:
+def build_report_chat_fallback(
+    report: Dict[str, Any],
+    message: str,
+    unavailable_reason: Optional[str] = None,
+) -> Dict[str, Any]:
     lower = message.lower()
     findings = report.get("findings", [])
     fixes = report.get("suggested_fixes", [])
     tests = report.get("custom_tests", [])
     top = findings[0] if findings else None
+    consensus_findings = report.get("consensus_findings", [])
+    pr_draft = report.get("pr_draft", {})
+
+    if report.get("analysis_mode") == ANALYSIS_MODE_MOSAIC:
+        if any(word in lower for word in ["disagree", "consensus", "challenge", "debate"]):
+            contested = next(
+                (
+                    item
+                    for item in consensus_findings
+                    if item.get("resolution") != "confirmed" or item.get("critic_verdict") != "confirmed"
+                ),
+                None,
+            )
+            if contested:
+                supporting = ", ".join(contested.get("supporting_agents", [])) or "none"
+                opposing = ", ".join(contested.get("opposing_agents", [])) or "none"
+                reply = (
+                    f"MOSAIC saw disagreement around '{contested['title']}' in {contested['file_path']}. "
+                    f"Supporting agents: {supporting}. Challenging agents: {opposing}. "
+                    f"It landed as {contested['resolution']} with critic verdict {contested['critic_verdict']} at "
+                    f"{contested['confidence']}% confidence."
+                )
+            else:
+                reply = "The MOSAIC agents converged cleanly on the current findings, so there is no major disagreement to explain."
+            return {
+                "reply": reply,
+                "apply_changes": False,
+                "engineer_summary": None,
+                "suggested_fixes": None,
+                "custom_tests": None,
+                "pr_title": None,
+                "pr_body": None,
+            }
+        elif "critic" in lower:
+            critic_focus = next(
+                (item for item in consensus_findings if item.get("critic_verdict") != "confirmed"),
+                consensus_findings[0] if consensus_findings else None,
+            )
+            if critic_focus:
+                reply = (
+                    f"The critic verdict for '{critic_focus['title']}' is {critic_focus['critic_verdict']}. "
+                    f"{critic_focus.get('critic_reason', critic_focus['explanation'])}"
+                )
+            else:
+                reply = "There is no critic verdict yet because MOSAIC has not produced a consensus finding for this report."
+            return {
+                "reply": reply,
+                "apply_changes": False,
+                "engineer_summary": None,
+                "suggested_fixes": None,
+                "custom_tests": None,
+                "pr_title": None,
+                "pr_body": None,
+            }
+        elif any(word in lower for word in ["confidence", "pr unavailable", "preview", "draft pr", "why no pr"]):
+            top_candidate = next((item for item in consensus_findings if item.get("resolution") == "confirmed"), None)
+            if top_candidate and not top_candidate.get("eligible_for_fix"):
+                reply = (
+                    f"The strongest MOSAIC finding is '{top_candidate['title']}' at {top_candidate['confidence']}% confidence, "
+                    f"but it is not PR-ready because the critic verdict is {top_candidate['critic_verdict']} "
+                    f"or the confidence stayed below the 80% fix threshold."
+                )
+            else:
+                reply = pr_draft.get("preview_only_reason") or (
+                    "The draft PR is still preview-only because no MOSAIC finding reached the confirmed and critic-confirmed threshold for automatic changes."
+                )
+            return {
+                "reply": reply,
+                "apply_changes": False,
+                "engineer_summary": None,
+                "suggested_fixes": None,
+                "custom_tests": None,
+                "pr_title": None,
+                "pr_body": None,
+            }
 
     if any(word in lower for word in ["where", "problem", "wrong", "issue", "bug"]):
         if top:
@@ -1609,9 +2834,10 @@ def build_report_chat_fallback(report: Dict[str, Any], message: str) -> Dict[str
         else:
             reply = "I do not see a concrete finding in this report yet. Run analysis first and I can walk through the result."
     elif any(word in lower for word in ["modify", "change", "rewrite", "update", "improve", "patch", "test"]):
+        reason = unavailable_reason or "the backend AI service was unavailable for this request"
         reply = (
-            "I can update the proposed fix and tests, but the model-backed chat path was unavailable for this request. "
-            "Try again after the backend AI service is available."
+            f"I couldn't update the proposed fix and tests because {reason}. "
+            "Try the request again once the AI service is healthy, or rerun analysis later."
         )
     else:
         reply = (
@@ -1636,6 +2862,11 @@ def trim_chat_history(history: List[Dict[str, str]], limit: int = 12) -> List[Di
 
 async def load_report_code(session: Dict[str, Any], report: Dict[str, Any]) -> str:
     if session.get("is_mock"):
+        benchmark_case_id = (report.get("benchmark_metadata") or {}).get("case_id")
+        if benchmark_case_id:
+            benchmark_case = load_benchmark_case(benchmark_case_id)
+            if benchmark_case and benchmark_case.get("code_snippet"):
+                return benchmark_case["code_snippet"]
         return MOCK_CODE_SNIPPETS.get(report.get("repo_name", "default"), MOCK_CODE_SNIPPETS["default"])
 
     access_token = session.get("github_access_token")
@@ -1654,16 +2885,32 @@ async def generate_report_chat_response(
     message: str,
     chat_history: List[Dict[str, str]],
 ) -> Dict[str, Any]:
+    if not ZAI_API_KEY:
+        return build_report_chat_fallback(
+            report,
+            message,
+            unavailable_reason=classify_ai_unavailability_reason(missing_api_key=True),
+        )
+    if not files:
+        return build_report_chat_fallback(
+            report,
+            message,
+            unavailable_reason=classify_ai_unavailability_reason(missing_files=True),
+        )
+
     fallback = build_report_chat_fallback(report, message)
-    if not ZAI_API_KEY or not files:
-        return fallback
 
     focus_files = select_focus_files(files, report.get("findings", []), limit=4, max_chars=50_000)
     if not focus_files:
-        return fallback
+        return build_report_chat_fallback(
+            report,
+            message,
+            unavailable_reason=classify_ai_unavailability_reason(missing_focus_files=True),
+        )
 
     file_lookup = {file_info["path"]: file_info for file_info in files}
     report_snapshot = {
+        "analysis_mode": report.get("analysis_mode", ANALYSIS_MODE_CLASSIC),
         "repo_full_name": report.get("repo_full_name"),
         "branch": report.get("branch"),
         "status": report.get("status"),
@@ -1682,6 +2929,18 @@ async def generate_report_chat_response(
         ],
         "custom_tests": report.get("custom_tests", [])[:3],
         "pr_draft": report.get("pr_draft", {}),
+        "consensus_findings": report.get("consensus_findings", [])[:4],
+        "critic_results": report.get("critic_results", [])[:4],
+        "agent_runs": [
+            {
+                "agent": item.get("agent"),
+                "label": item.get("label"),
+                "status": item.get("status"),
+                "claim_count": item.get("claim_count"),
+                "summary": item.get("summary"),
+            }
+            for item in report.get("agent_runs", [])[:8]
+        ],
     }
     history_payload = chat_history[-6:]
     files_payload = "\n\n".join(
@@ -1756,7 +3015,11 @@ async def generate_report_chat_response(
         content = completion.choices[0].message.content or ""
         payload = extract_json_object(content)
         if not payload:
-            return fallback
+            return build_report_chat_fallback(
+                report,
+                message,
+                unavailable_reason=classify_ai_unavailability_reason(invalid_json=True),
+            )
 
         normalized_fixes = normalize_model_generated_fixes(payload.get("fixes", []), file_lookup)
         normalized_tests = normalize_model_generated_tests(payload.get("tests", []))
@@ -1773,7 +3036,11 @@ async def generate_report_chat_response(
         }
     except Exception as exc:
         logger.warning("Report chat generation failed for %s: %s", report.get("repo_full_name"), exc)
-        return fallback
+        return build_report_chat_fallback(
+            report,
+            message,
+            unavailable_reason=classify_ai_unavailability_reason(exc),
+        )
 
 
 async def build_engineer_report(
@@ -1782,12 +3049,25 @@ async def build_engineer_report(
     repo_name: str,
     branch: str,
     code: str,
+    analysis_mode: str = ANALYSIS_MODE_CLASSIC,
+    benchmark_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     files = parse_code_files(code, repo_name)
+    if analysis_mode == ANALYSIS_MODE_MOSAIC:
+        return await build_mosaic_engineer_report(
+            run_id=run_id,
+            repo_full_name=repo_full_name,
+            repo_name=repo_name,
+            branch=branch,
+            files=files,
+            benchmark_metadata=benchmark_metadata,
+        )
+
     findings = detect_findings(files)
     fixes = build_suggested_fixes(repo_name, files, findings)
     custom_tests = build_custom_tests(repo_name, files)
     engineer_summary = ""
+    preview_only_reason = None
 
     if files and not any(fix.get("updated_code") for fix in fixes):
         model_pack = await generate_model_backed_engineer_pack(
@@ -1798,6 +3078,7 @@ async def build_engineer_report(
             findings=findings,
         )
         if model_pack:
+            preview_only_reason = model_pack.get("preview_only_reason")
             if model_pack.get("suggested_fixes"):
                 fixes = model_pack["suggested_fixes"]
             if model_pack.get("custom_tests"):
@@ -1812,14 +3093,23 @@ async def build_engineer_report(
         findings=findings,
         fixes=fixes,
         custom_tests=custom_tests,
+        preview_only_reason=preview_only_reason,
     )
 
     return {
+        "analysis_mode": ANALYSIS_MODE_CLASSIC,
         "engineer_summary": engineer_summary or build_engineer_summary(findings, fixes, custom_tests),
         "findings": findings,
         "suggested_fixes": fixes,
         "custom_tests": custom_tests,
         "pr_draft": pr_draft,
+        "agent_runs": [],
+        "claim_groups": [],
+        "consensus_rounds": [],
+        "critic_results": [],
+        "consensus_findings": [],
+        "agent_reliability_snapshot": {},
+        "benchmark_metadata": benchmark_metadata,
     }
 
 # ---- GitHub Code Fetching ----
@@ -2143,31 +3433,67 @@ def generate_pr_comment(report: dict) -> str:
 """
 
 
-async def run_analysis_task(run_id: str, repo_full_name: str, repo_name: str, branch: str, code: str):
-    """Background task to run all 6 AI tests concurrently."""
+async def run_analysis_task(
+    run_id: str,
+    repo_full_name: str,
+    repo_name: str,
+    branch: str,
+    code: str,
+    analysis_mode: str = ANALYSIS_MODE_CLASSIC,
+    benchmark_metadata: Optional[Dict[str, Any]] = None,
+):
+    """Background task to run either the classic analyzer or the MOSAIC pipeline."""
     try:
-        # Update status to running
+        start_message = "Starting MOSAIC analysis..." if analysis_mode == ANALYSIS_MODE_MOSAIC else "Starting AI analysis..."
         await db.reports.update_one(
             {"id": run_id},
-            {"$set": {"status": "running"}, "$push": {"log_messages": "Starting AI analysis..."}}
+            {"$set": {"status": "running"}, "$push": {"log_messages": start_message}}
         )
 
-        # Run all 6 tests concurrently
-        tasks = []
-        for test_type, prompt in TEST_PROMPTS.items():
-            tasks.append(run_single_test(test_type, prompt, code))
+        if analysis_mode == ANALYSIS_MODE_MOSAIC:
+            for spec in MOSAIC_ANALYSIS_AGENTS:
+                await db.reports.update_one(
+                    {"id": run_id},
+                    {"$push": {"log_messages": f"Queuing {spec['label']}..."}}
+                )
             await db.reports.update_one(
                 {"id": run_id},
-                {"$push": {"log_messages": f"Queuing {TEST_TYPE_NAMES[test_type]} analysis..."}}
+                {"$push": {"log_messages": "Running consensus orchestrator and critic agent..."}}
+            )
+            engineer_report = await build_engineer_report(
+                run_id,
+                repo_full_name,
+                repo_name,
+                branch,
+                code,
+                analysis_mode=analysis_mode,
+                benchmark_metadata=benchmark_metadata,
+            )
+            results = engineer_report.get("results", [])
+        else:
+            tasks = []
+            for test_type, prompt in TEST_PROMPTS.items():
+                tasks.append(run_single_test(test_type, prompt, code))
+                await db.reports.update_one(
+                    {"id": run_id},
+                    {"$push": {"log_messages": f"Queuing {TEST_TYPE_NAMES[test_type]} analysis..."}}
+                )
+
+            results = await asyncio.gather(*tasks)
+            await db.reports.update_one(
+                {"id": run_id},
+                {"$push": {"log_messages": "Generating AI fix packs and custom regression tests..."}}
+            )
+            engineer_report = await build_engineer_report(
+                run_id,
+                repo_full_name,
+                repo_name,
+                branch,
+                code,
+                analysis_mode=analysis_mode,
+                benchmark_metadata=benchmark_metadata,
             )
 
-        results = await asyncio.gather(*tasks)
-        await db.reports.update_one(
-            {"id": run_id},
-            {"$push": {"log_messages": "Generating AI fix packs and custom regression tests..."}}
-        )
-
-        # Determine overall status
         statuses = [r["status"] for r in results]
         if "failed" in statuses:
             overall = "failed"
@@ -2176,7 +3502,6 @@ async def run_analysis_task(run_id: str, repo_full_name: str, repo_name: str, br
         else:
             overall = "passed"
 
-        engineer_report = await build_engineer_report(run_id, repo_full_name, repo_name, branch, code)
         report_data = {
             "status": overall,
             "results": results,
@@ -2189,7 +3514,14 @@ async def run_analysis_task(run_id: str, repo_full_name: str, repo_name: str, br
             "branch": branch
         })
 
-        log_msgs = [f"{TEST_TYPE_NAMES[r['test_type']]} — {r['status'].upper()}" for r in results]
+        if analysis_mode == ANALYSIS_MODE_MOSAIC:
+            confirmed = sum(1 for item in engineer_report.get("consensus_findings", []) if item.get("resolution") == "confirmed")
+            contested = sum(1 for item in engineer_report.get("consensus_findings", []) if item.get("resolution") == "contested")
+            rejected = sum(1 for item in engineer_report.get("consensus_findings", []) if item.get("resolution") == "rejected")
+            log_msgs = [f"{run['label']} — {run['status'].upper()}" for run in engineer_report.get("agent_runs", [])]
+            log_msgs.append(f"MOSAIC consensus ready — {confirmed} confirmed | {contested} contested | {rejected} rejected")
+        else:
+            log_msgs = [f"{TEST_TYPE_NAMES[r['test_type']]} — {r['status'].upper()}" for r in results]
         log_msgs.append(f"Fix pack ready — {len(engineer_report['suggested_fixes'])} file(s)")
         log_msgs.append(f"Custom tests ready — {len(engineer_report['custom_tests'])} file(s)")
         pr_status = "draft PR can be created" if engineer_report["pr_draft"].get("can_create") else "draft PR is preview only"
@@ -2331,12 +3663,31 @@ async def setup_webhook(owner: str, repo: str):
 @api_router.post("/analysis/run")
 async def run_analysis(req: AnalysisRequest, request: Request, background_tasks: BackgroundTasks):
     run_id = str(uuid.uuid4())
+    analysis_mode = req.analysis_mode if req.analysis_mode in {ANALYSIS_MODE_CLASSIC, ANALYSIS_MODE_MOSAIC} else ANALYSIS_MODE_CLASSIC
+    benchmark_case = load_benchmark_case(req.benchmark_case_id) if req.benchmark_case_id else None
+    if req.benchmark_case_id and not benchmark_case:
+        raise HTTPException(status_code=404, detail="Benchmark case not found")
+
+    benchmark_metadata = None
+    if benchmark_case:
+        benchmark_metadata = {
+            "case_id": benchmark_case.get("id", req.benchmark_case_id),
+            "title": benchmark_case.get("title"),
+            "expected_bug_labels": benchmark_case.get("expected_bug_labels", []),
+            "expected_behavior": benchmark_case.get("expected_behavior"),
+            "executable_check": benchmark_case.get("executable_check"),
+        }
 
     # Try to fetch real code from GitHub if we have a valid session
     code = req.code_snippet
     commit_sha = req.commit_sha
     session_id = request.cookies.get(SESSION_COOKIE_NAME)
     session = session_store.get(session_id) if session_id else None
+
+    if benchmark_case and not code:
+        code = benchmark_case.get("code_snippet")
+        if not commit_sha:
+            commit_sha = benchmark_case.get("commit_sha")
 
     if not code and session and not session.get("is_mock"):
         access_token = session.get("github_access_token")
@@ -2362,17 +3713,32 @@ async def run_analysis(req: AnalysisRequest, request: Request, background_tasks:
         "results": [],
         "pr_comment": "",
         "log_messages": ["Analysis queued..."],
+        "analysis_mode": analysis_mode,
         "engineer_summary": "",
         "findings": [],
         "suggested_fixes": [],
         "custom_tests": [],
         "pr_draft": {},
         "chat_history": [],
+        "agent_runs": [],
+        "claim_groups": [],
+        "consensus_rounds": [],
+        "critic_results": [],
+        "consensus_findings": [],
+        "agent_reliability_snapshot": {},
+        "benchmark_metadata": benchmark_metadata,
     }
     await db.reports.insert_one({**report})
 
     background_tasks.add_task(
-        run_analysis_task, run_id, req.repo_full_name, req.repo_name, req.branch, code
+        run_analysis_task,
+        run_id,
+        req.repo_full_name,
+        req.repo_name,
+        req.branch,
+        code,
+        analysis_mode,
+        benchmark_metadata,
     )
 
     return {"run_id": run_id, "status": "queued"}

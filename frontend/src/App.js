@@ -56,7 +56,7 @@ function App() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: '#0A0A0A' }}>
-        <div className="font-mono text-zinc-500 text-sm">[ loading... ]</div>
+        <div className="font-mono text-zinc-500 text-sm animate-pulse">[ &mdash; ]</div>
       </div>
     );
   }

@@ -35,62 +35,74 @@ const capabilities = [
   },
 ];
 
-export default function CapabilityPanel({ selectedRepo, latestReport }) {
+export default function CapabilityPanel({ selectedRepo, latestReport, analysisMode }) {
   const prStatus = latestReport?.pr_draft?.created
     ? "Draft PR opened"
     : latestReport?.pr_draft?.can_create
     ? "Draft PR ready"
     : "Preview mode";
+  const effectiveMode = latestReport?.analysis_mode || analysisMode || "classic";
+  const headline =
+    effectiveMode === "mosaic"
+      ? "One run finds the top problem, verifies it, suggests tests and fixes, and prepares a draft PR when it is safe."
+      : "One run reviews the code, explains the issue, suggests fixes, and drafts the next steps.";
+  const subheadline = selectedRepo
+    ? effectiveMode === "mosaic"
+      ? `Ready for ${selectedRepo.full_name}. MOSAIC will compare specialist viewpoints, verify the strongest finding, and only move to PR-ready changes when the evidence is strong enough.`
+      : `Ready for ${selectedRepo.full_name}. Classic mode will run the original single-pass workflow for a faster, simpler review.`
+    : "Select a repository to see the top issue, confidence level, generated tests, and PR readiness in one professor-friendly report.";
 
   return (
-    <section className="bg-[#121214] border border-white/[0.06] rounded-sm overflow-hidden">
-      <div className="px-5 py-4 border-b border-white/[0.06] bg-[radial-gradient(circle_at_top_left,rgba(0,122,255,0.16),transparent_35%),linear-gradient(135deg,rgba(255,255,255,0.02),rgba(255,255,255,0))]">
+    <section className="overflow-hidden rounded-[24px] border border-[color:var(--border)] bg-[linear-gradient(180deg,rgba(13,17,23,0.96),rgba(10,14,20,0.96))]">
+      <div className="border-b border-[color:var(--border)] bg-[radial-gradient(circle_at_top_left,oklch(0.72_0.16_192_/_0.16),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0))] px-5 py-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-500">
+            <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-[var(--text-muted)]">
               Modern Code Analyzer
             </h3>
-            <p className="mt-2 text-xl font-bold tracking-tight text-white" style={{ fontFamily: "Chivo, sans-serif" }}>
-              Analyze, explain, patch, test, and draft a PR from one run.
+            <p className="mt-3 text-2xl font-bold tracking-[-0.05em] text-[var(--text)]" style={{ fontFamily: "Syne, sans-serif" }}>
+              {headline}
             </p>
-            <p className="mt-2 text-sm text-zinc-400 max-w-2xl">
-              {selectedRepo
-                ? `Ready for ${selectedRepo.full_name}. The analyzer will inspect the selected branch, explain the riskiest issues, generate fix packs, and build targeted tests.`
-                : "Select a repository to run the full AI engineer workflow. The app will surface findings, code fixes, custom tests, and a draft pull request plan."}
+            <p className="mt-3 max-w-2xl text-sm leading-7 text-[var(--text-muted)]">
+              {subheadline}
             </p>
           </div>
 
-          <div className="min-w-[220px] bg-black/30 border border-white/10 rounded-sm px-4 py-3">
-            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
-              Latest AI Brief
+          <div className="min-w-[240px] rounded-[18px] border border-[color:var(--border)] bg-[rgba(18,24,32,0.82)] px-4 py-4">
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[var(--text-muted)]">
+              Latest Report
             </div>
-            <div className="mt-2 text-sm text-zinc-200">
+            <div className="mt-2 text-sm text-[var(--text)]">
               {latestReport?.engineer_summary || "No AI engineer run yet."}
             </div>
-            <div className="mt-3 flex items-center justify-between text-[11px] font-mono">
-              <span className="text-zinc-500">PR state</span>
-              <span className="text-zinc-300">{prStatus}</span>
+            <div className="mt-4 flex items-center justify-between text-[11px] font-mono">
+              <span className="text-[var(--text-subtle)]">Workflow</span>
+              <span className="uppercase text-[var(--text-secondary)]">{effectiveMode}</span>
+            </div>
+            <div className="mt-2 flex items-center justify-between text-[11px] font-mono">
+              <span className="text-[var(--text-subtle)]">PR state</span>
+              <span className="text-[var(--text-secondary)]">{prStatus}</span>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 p-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4">
         {capabilities.map((capability, index) => {
           const Icon = capability.icon;
           return (
             <div
               key={capability.title}
-              className={`rounded-sm border ${capability.border} ${capability.bg} p-4 animate-fade-in-up`}
+              className={`border-r border-b border-[color:var(--border)] last:border-r-0 xl:[&:nth-child(4)]:border-r-0 md:[&:nth-child(2)]:border-r-0 xl:[&:nth-child(2)]:border-r md:[&:nth-child(n+3)]:border-b-0 xl:[&:nth-child(n+3)]:border-b-0 p-4 animate-fade-in-up`}
               style={{ animationDelay: `${index * 0.05}s` }}
             >
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-sm border border-white/10 bg-black/20 flex items-center justify-center">
+                <div className={`flex h-9 w-9 items-center justify-center rounded-full border ${capability.border} ${capability.bg}`}>
                   <Icon className={`w-4 h-4 ${capability.accent}`} strokeWidth={1.8} />
                 </div>
-                <span className="text-sm font-semibold text-white">{capability.title}</span>
+                <span className="text-sm font-semibold text-[var(--text)]">{capability.title}</span>
               </div>
-              <p className="mt-3 text-xs leading-relaxed text-zinc-300">
+              <p className="mt-3 text-xs leading-6 text-[var(--text-muted)]">
                 {capability.description}
               </p>
             </div>

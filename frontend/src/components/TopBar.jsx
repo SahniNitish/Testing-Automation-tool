@@ -10,8 +10,7 @@ export default function TopBar({ user, onLogout }) {
 
   return (
     <nav
-      className="sticky top-0 z-50 border-b border-white/10"
-      style={{ background: "rgba(10,10,10,0.85)", backdropFilter: "blur(20px)" }}
+      className="sticky top-0 z-50 bg-black/60 backdrop-blur-xl border-b border-white/10"
     >
       <div className="max-w-7xl mx-auto px-6 md:px-8 h-14 flex items-center justify-between">
         {/* Logo */}
@@ -51,7 +50,7 @@ export default function TopBar({ user, onLogout }) {
           <button
             data-testid="sign-out-button"
             onClick={onLogout}
-            className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors duration-150 px-2 py-1 rounded-sm hover:bg-white/5"
+            className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors duration-150 px-2 py-1 rounded-sm hover:bg-white/5 border border-transparent hover:border-white/10 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-[#0A0A0A]"
           >
             <LogOut className="w-3.5 h-3.5" strokeWidth={1.5} />
             <span className="hidden sm:inline">Sign out</span>

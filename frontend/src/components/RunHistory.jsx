@@ -13,11 +13,11 @@ export default function RunHistory({ reports, onViewReport }) {
   if (!reports || reports.length === 0) {
     return (
       <div>
-        <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-500 mb-3">
+        <h3 className="mb-3 text-xs font-bold uppercase tracking-[0.2em] text-[var(--text-muted)]">
           Run History
         </h3>
-        <div className="bg-[#121214] border border-white/[0.06] rounded-sm p-8 text-center">
-          <p className="text-sm text-zinc-600 font-mono">
+        <div className="surface-card rounded-[24px] p-8 text-center">
+          <p className="text-sm text-[var(--text-subtle)] font-mono">
             // no runs yet — select a repo and run analysis
           </p>
         </div>
@@ -28,35 +28,35 @@ export default function RunHistory({ reports, onViewReport }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-500">
+        <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-[var(--text-muted)]">
           Run History
         </h3>
-        <span className="text-[11px] text-zinc-600 font-mono">
+        <span className="text-[11px] text-[var(--text-subtle)] font-mono">
           {reports.length} runs
         </span>
       </div>
 
-      <div className="bg-[#121214] border border-white/[0.06] rounded-sm overflow-hidden">
+      <div className="overflow-hidden rounded-[24px] border border-[color:var(--border)] bg-[linear-gradient(180deg,rgba(13,17,23,0.96),rgba(10,14,20,0.96))]">
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="run-history-table">
             <thead>
-              <tr className="border-b border-white/[0.06]">
-                <th className="text-left text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-600 px-4 py-2.5">
+              <tr className="border-b border-[color:var(--border)]">
+                <th className="text-left text-[10px] font-bold uppercase tracking-[0.15em] text-[var(--text-subtle)] px-4 py-3">
                   Status
                 </th>
-                <th className="text-left text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-600 px-4 py-2.5">
+                <th className="text-left text-[10px] font-bold uppercase tracking-[0.15em] text-[var(--text-subtle)] px-4 py-3">
                   Repository
                 </th>
-                <th className="text-left text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-600 px-4 py-2.5 hidden sm:table-cell">
+                <th className="text-left text-[10px] font-bold uppercase tracking-[0.15em] text-[var(--text-subtle)] px-4 py-3 hidden sm:table-cell">
                   Branch
                 </th>
-                <th className="text-left text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-600 px-4 py-2.5 hidden md:table-cell">
+                <th className="text-left text-[10px] font-bold uppercase tracking-[0.15em] text-[var(--text-subtle)] px-4 py-3 hidden md:table-cell">
                   Commit
                 </th>
-                <th className="text-left text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-600 px-4 py-2.5">
+                <th className="text-left text-[10px] font-bold uppercase tracking-[0.15em] text-[var(--text-subtle)] px-4 py-3">
                   Time
                 </th>
-                <th className="text-right text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-600 px-4 py-2.5">
+                <th className="text-right text-[10px] font-bold uppercase tracking-[0.15em] text-[var(--text-subtle)] px-4 py-3">
                   Actions
                 </th>
               </tr>
@@ -75,7 +75,7 @@ export default function RunHistory({ reports, onViewReport }) {
                   <tr
                     key={report.id}
                     data-testid={`run-row-${report.id}`}
-                    className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors duration-150 cursor-pointer"
+                    className="cursor-pointer border-b border-[color:rgba(28,38,54,0.5)] last:border-0 transition-colors duration-150 hover:bg-[rgba(18,24,32,0.72)]"
                     onClick={() => onViewReport(report.id)}
                   >
                     <td className="px-4 py-3">
@@ -90,39 +90,44 @@ export default function RunHistory({ reports, onViewReport }) {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-col gap-1">
-                        <span className="text-sm text-zinc-300">
-                          {report.repo_name}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm text-[var(--text)]">
+                            {report.repo_name}
+                          </span>
+                          <span className="rounded-full border border-[color:var(--border)] bg-[var(--surface)] px-2 py-0.5 text-[10px] font-mono uppercase text-[var(--text-muted)]">
+                            {report.analysis_mode || "classic"}
+                          </span>
+                        </div>
                         {report.pr_draft?.created ? (
-                          <span className="text-[10px] font-medium text-emerald-300">
+                          <span className="text-[10px] font-medium text-[var(--success)]">
                             draft PR opened
                           </span>
                         ) : report.pr_draft?.can_create ? (
-                          <span className="text-[10px] font-medium text-sky-300">
+                          <span className="text-[10px] font-medium text-[var(--accent)]">
                             PR-ready fix pack
                           </span>
                         ) : null}
                       </div>
                     </td>
                     <td className="px-4 py-3 hidden sm:table-cell">
-                      <span className="text-xs text-zinc-500 font-mono">
+                      <span className="text-xs text-[var(--text-muted)] font-mono">
                         {report.branch}
                       </span>
                     </td>
                     <td className="px-4 py-3 hidden md:table-cell">
-                      <span className="text-xs text-zinc-500 font-mono">
+                      <span className="text-xs text-[var(--text-muted)] font-mono">
                         {(report.commit_sha || "").slice(0, 7)}
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-xs text-zinc-500">
+                      <span className="text-xs text-[var(--text-muted)] font-mono">
                         {timeAgo}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right">
                       <button
                         data-testid={`view-report-${report.id}`}
-                        className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors duration-150 inline-flex items-center gap-1"
+                        className="inline-flex items-center gap-1 text-xs text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text)]"
                         onClick={(e) => {
                           e.stopPropagation();
                           onViewReport(report.id);

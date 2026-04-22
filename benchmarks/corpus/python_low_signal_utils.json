@@ -1,0 +1,11 @@
+{
+  "id": "python_low_signal_utils",
+  "title": "Low-signal utility module without obvious defects",
+  "repo_full_name": "benchmark/python-low-signal-utils",
+  "repo_name": "python-low-signal-utils",
+  "branch": "main",
+  "commit_sha": "bench-utils-001",
+  "expected_bug_labels": [],
+  "expected_behavior": "MOSAIC should avoid inventing strong findings and should not generate a PR-ready patch.",
+  "code_snippet": "# ---- FILE: utils/strings.py ----\n\ndef normalize_name(value):\n    return \" \".join(part.capitalize() for part in value.strip().split())\n\n\ndef slugify(value):\n    return normalize_name(value).lower().replace(\" \", \"-\")\n"
+}

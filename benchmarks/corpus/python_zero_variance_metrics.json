@@ -1,0 +1,18 @@
+{
+  "id": "python_zero_variance_metrics",
+  "title": "Missing zero-variance guard in analytics helper",
+  "repo_full_name": "benchmark/python-zero-variance-metrics",
+  "repo_name": "python-zero-variance-metrics",
+  "branch": "main",
+  "commit_sha": "bench-metrics-001",
+  "expected_bug_labels": ["zero_variance_outlier"],
+  "expected_behavior": "MOSAIC should confirm the zero-variance outlier finding and produce a PR-ready fix pack.",
+  "code_snippet": "# ---- FILE: analytics/metrics.py ----\n\ndef calculate_metrics(data):\n    if not data:\n        return {\"mean\": 0, \"median\": 0, \"std\": 0}\n\n    n = len(data)\n    mean = sum(data) / n\n    sorted_data = sorted(data)\n    median = sorted_data[n // 2] if n % 2 else (sorted_data[n // 2 - 1] + sorted_data[n // 2]) / 2\n    variance = sum((x - mean) ** 2 for x in data) / n\n    std = variance ** 0.5\n    return {\"mean\": mean, \"median\": median, \"std\": std, \"count\": n}\n\n\ndef filter_outliers(data, threshold=2):\n    metrics = calculate_metrics(data)\n    return [x for x in data if abs(x - metrics[\"mean\"]) <= threshold * metrics[\"std\"]]\n",
+  "executable_check": {
+    "bug_type": "zero_variance_outlier",
+    "file_path": "analytics/metrics.py",
+    "function": "filter_outliers",
+    "args": [[5, 5, 5]],
+    "expected_result": [5, 5, 5]
+  }
+}

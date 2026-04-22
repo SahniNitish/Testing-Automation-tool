@@ -1,0 +1,18 @@
+{
+  "id": "python_eval_injection",
+  "title": "Unsafe eval in a request handler",
+  "repo_full_name": "benchmark/python-eval-injection",
+  "repo_name": "python-eval-injection",
+  "branch": "main",
+  "commit_sha": "bench-eval-001",
+  "expected_bug_labels": ["dynamic_execution"],
+  "expected_behavior": "MOSAIC should confirm the dynamic execution finding and keep PR generation in preview mode unless a safe concrete patch exists.",
+  "code_snippet": "# ---- FILE: src/handler.py ----\n\ndef handle(raw_value):\n    return eval(raw_value)\n",
+  "executable_check": {
+    "bug_type": "dynamic_execution",
+    "file_path": "src/handler.py",
+    "function": "handle",
+    "args": ["2 + 2"],
+    "expected_result": 4
+  }
+}

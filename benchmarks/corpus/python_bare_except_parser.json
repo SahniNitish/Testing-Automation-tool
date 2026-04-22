@@ -1,0 +1,18 @@
+{
+  "id": "python_bare_except_parser",
+  "title": "Bare except in an integer parser",
+  "repo_full_name": "benchmark/python-bare-except-parser",
+  "repo_name": "python-bare-except-parser",
+  "branch": "main",
+  "commit_sha": "bench-parser-001",
+  "expected_bug_labels": ["bare_except"],
+  "expected_behavior": "MOSAIC should surface the exception-handling issue and keep it visible even if the critic cannot fully verify it.",
+  "code_snippet": "# ---- FILE: parsing/reader.py ----\n\ndef parse_int(raw_value):\n    try:\n        return int(raw_value)\n    except:\n        return None\n",
+  "executable_check": {
+    "bug_type": "bare_except",
+    "file_path": "parsing/reader.py",
+    "function": "parse_int",
+    "args": ["abc"],
+    "expected_result": null
+  }
+}

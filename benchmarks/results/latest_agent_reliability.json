@@ -1,0 +1,8 @@
+{
+  "unit_agent": 1.0,
+  "black_box_agent": 1.0,
+  "edge_case_agent": 1.0,
+  "security_agent": 0.0,
+  "white_box_agent": 1.0,
+  "performance_agent": 0.0
+}
