@@ -858,7 +858,7 @@ def classify_ai_unavailability_reason(
 def build_preview_only_reason(unavailability_reason: Optional[str] = None) -> str:
     if unavailability_reason:
         return f"The draft PR stayed in preview mode because {unavailability_reason}."
-    return "The fallback analyzer prepared a review plan, but it needs a model-backed patch before opening a safe PR."
+    return "The app found a likely issue, but it still needs a safe concrete code patch before opening a draft PR."
 
 
 def load_benchmark_case(case_id: str) -> Optional[Dict[str, Any]]:
@@ -1702,27 +1702,28 @@ def derive_results_from_agent_runs(agent_runs: List[Dict[str, Any]]) -> List[Dic
 
 
 def build_mosaic_engineer_summary(consensus_findings: List[Dict[str, Any]], agent_runs: List[Dict[str, Any]]) -> str:
+    specialist_count = sum(1 for run in agent_runs if run.get("test_type"))
     confirmed = [item for item in consensus_findings if item["resolution"] == "confirmed"]
     contested = [item for item in consensus_findings if item["resolution"] == "contested"]
     rejected = [item for item in consensus_findings if item["resolution"] == "rejected"]
     if confirmed:
         top = confirmed[0]
         return (
-            f"MOSAIC ran {len(agent_runs)} agents. Consensus confirmed {len(confirmed)} finding(s), "
-            f"contested {len(contested)}, and rejected {len(rejected)}. "
-            f"Highest-confidence issue: {top['title']} in {top['file_path']} "
-            f"({top['confidence']}% confidence, critic {top['critic_verdict']})."
+            f"MOSAIC used {specialist_count} specialist agents plus a verifier and a consensus step. "
+            f"Main problem: {top['title']} in {top['file_path']}. "
+            f"It was confirmed at {top['confidence']}% confidence, with verifier verdict {top['critic_verdict']}. "
+            f"Overall: {len(confirmed)} confirmed, {len(contested)} contested, {len(rejected)} rejected."
         )
     if contested:
         top = contested[0]
         return (
-            f"MOSAIC ran {len(agent_runs)} agents, but no issue cleared the confirmed threshold. "
-            f"Most interesting debate: {top['title']} in {top['file_path']} "
-            f"({top['confidence']}% confidence, critic {top['critic_verdict']})."
+            f"MOSAIC used {specialist_count} specialist agents plus a verifier and a consensus step. "
+            f"The top suspected problem was {top['title']} in {top['file_path']}, "
+            f"but it stayed contested at {top['confidence']}% confidence with verifier verdict {top['critic_verdict']}."
         )
     return (
-        f"MOSAIC ran {len(agent_runs)} agents and did not confirm a strong defect. "
-        "The run remains useful as a low-signal baseline for benchmark and consensus analysis."
+        f"MOSAIC used {specialist_count} specialist agents plus a verifier and a consensus step, "
+        "but it did not confirm a strong enough defect to move into patch generation."
     )
 
 
@@ -1736,11 +1737,11 @@ def build_mosaic_preview_only_reason(
     if fallback_reason:
         return fallback_reason
     if not consensus_findings:
-        return "MOSAIC kept the draft PR in preview mode because no supported defect survived consensus."
+        return "MOSAIC kept the draft PR in preview mode because none of the specialist-agent findings survived consensus."
     if not any(item["eligible_for_fix"] for item in consensus_findings):
         return (
-            "MOSAIC kept the draft PR in preview mode because no finding reached the "
-            "confirmed + critic-confirmed confidence threshold for automatic code changes."
+            "MOSAIC kept the draft PR in preview mode because no finding was confirmed strongly enough "
+            "by the specialist agents and verifier to safely change the code automatically."
         )
     return "MOSAIC confirmed a fix candidate, but it did not generate a safe concrete patch for this repository."
 
@@ -2808,12 +2809,16 @@ def build_report_chat_fallback(
             if top_candidate and not top_candidate.get("eligible_for_fix"):
                 reply = (
                     f"The strongest MOSAIC finding is '{top_candidate['title']}' at {top_candidate['confidence']}% confidence, "
-                    f"but it is not PR-ready because the critic verdict is {top_candidate['critic_verdict']} "
-                    f"or the confidence stayed below the 80% fix threshold."
+                    f"but the PR is still unavailable because the verifier verdict is {top_candidate['critic_verdict']} "
+                    f"or the confidence stayed below the 80% safety threshold."
                 )
             else:
-                reply = pr_draft.get("preview_only_reason") or (
-                    "The draft PR is still preview-only because no MOSAIC finding reached the confirmed and critic-confirmed threshold for automatic changes."
+                preview_reason = pr_draft.get("preview_only_reason")
+                reply = (
+                    f"The draft PR is still preview-only. {preview_reason}"
+                    if preview_reason
+                    else
+                    "The draft PR is still preview-only because no MOSAIC finding was strong enough and safe enough for automatic code changes."
                 )
             return {
                 "reply": reply,

@@ -2,16 +2,16 @@ import { Code2, Eye, GitBranch, TestTube2 } from "lucide-react";
 
 const capabilities = [
   {
-    title: "Deep analysis",
-    description: "Runs correctness, security, edge-case, and performance review in one pass.",
+    title: "Specialist agents",
+    description: "Uses dedicated agents for unit logic, black-box behavior, edge cases, security, white-box paths, and performance.",
     icon: Eye,
     accent: "text-sky-400",
     border: "border-sky-400/20",
     bg: "bg-sky-400/10",
   },
   {
-    title: "Fix packs",
-    description: "Generates code-level fixes with plain-English explanations of what changed.",
+    title: "Verifier check",
+    description: "A verifier and consensus step decide whether the finding is strong enough to trust.",
     icon: Code2,
     accent: "text-emerald-400",
     border: "border-emerald-400/20",
@@ -44,7 +44,7 @@ export default function CapabilityPanel({ selectedRepo, latestReport, analysisMo
   const effectiveMode = latestReport?.analysis_mode || analysisMode || "classic";
   const headline =
     effectiveMode === "mosaic"
-      ? "One run finds the top problem, verifies it, suggests tests and fixes, and prepares a draft PR when it is safe."
+      ? "One run uses specialist agents to find the top problem, verify it, suggest tests and fixes, and prepare a draft PR when it is safe."
       : "One run reviews the code, explains the issue, suggests fixes, and drafts the next steps.";
   const subheadline = selectedRepo
     ? effectiveMode === "mosaic"

@@ -129,6 +129,111 @@ function buildActionState(report, isMosaic) {
   };
 }
 
+function extractImportantLine(text) {
+  const lines = (text || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const highlighted =
+    lines.find((line) => /(fail|bug|error|critical|warning|exception|vulnerab|rejected)/i.test(line)) ||
+    lines[0] ||
+    "";
+  return highlighted.length > 220 ? `${highlighted.slice(0, 217)}...` : highlighted;
+}
+
+function buildPrimaryIssue(report, topFinding) {
+  const priorityResult =
+    (report.results || []).find((result) => result.status === "failed") ||
+    (report.results || []).find((result) => result.status === "warning") ||
+    report.results?.[0] ||
+    null;
+
+  if (topFinding) {
+    return {
+      title: topFinding.title,
+      summary: topFinding.explanation || report.engineer_summary,
+      detail:
+        topFinding.reproduction_hint ||
+        topFinding.recommendation ||
+        extractImportantLine(priorityResult?.details) ||
+        "Review the file and the generated fix suggestion before making changes.",
+      location: topFinding.file_path,
+      source: "Top finding",
+    };
+  }
+
+  if (priorityResult) {
+    return {
+      title: `${priorityResult.test_name} found a likely problem`,
+      summary: priorityResult.summary || report.engineer_summary,
+      detail: extractImportantLine(priorityResult.details) || "Open the detailed result to see the full explanation.",
+      location: null,
+      source: priorityResult.test_name,
+    };
+  }
+
+  return {
+    title: "No clear issue surfaced",
+    summary: report.engineer_summary || "The analysis did not return a strong error signal.",
+    detail: "You can still inspect the detailed findings and specialist checks below.",
+    location: null,
+    source: "Analysis summary",
+  };
+}
+
+function buildPrExplanation(report) {
+  const prDraft = report.pr_draft || {};
+
+  if (prDraft.created) {
+    return {
+      title: "Draft PR already opened",
+      detail: "This run already produced a branch and draft pull request.",
+    };
+  }
+
+  if (prDraft.can_create) {
+    return {
+      title: "Draft PR is ready",
+      detail: "The finding was strong enough and a concrete code patch is available, so the app can create a draft PR.",
+    };
+  }
+
+  return {
+    title: "Why PR is unavailable",
+    detail:
+      prDraft.preview_only_reason ||
+      "The app found a problem, but it is not safe enough yet to open an automatic draft PR.",
+  };
+}
+
+function buildAgentOverview(report, isMosaic) {
+  if (isMosaic) {
+    const specialistRuns = (report.agent_runs || []).filter(
+      (run) => run.agent !== "critic_agent" && run.agent !== "consensus_orchestrator",
+    );
+    return {
+      title: "Specialist agents used",
+      summary: `Yes. MOSAIC used ${specialistRuns.length} specialist agents, then added a verifier and a consensus step.`,
+      items: specialistRuns.map((run) => ({
+        label: run.label,
+        detail: run.focus,
+      })),
+    };
+  }
+
+  const reviewRuns = (report.results || []).map((result) => ({
+    label: result.test_name || result.test_type,
+    detail: "AI review lane",
+  }));
+
+  return {
+    title: "Review lanes used",
+    summary: "This run used AI review lanes, not the full MOSAIC multi-agent pipeline.",
+    items: reviewRuns,
+  };
+}
+
 function EmptyState({ message }) {
   return (
     <div className="surface-card p-8 text-center">
@@ -389,9 +494,9 @@ export default function ReportDetail({
   if (!report) return null;
 
   const overallStatusMap = {
-    passed: { label: "ALL TESTS PASSED", color: "text-emerald-400" },
-    warnings: { label: "WARNINGS DETECTED", color: "text-amber-400" },
-    failed: { label: "ISSUES FOUND", color: "text-red-400" },
+    passed: { label: "NO MAJOR ISSUES FOUND", color: "text-emerald-400" },
+    warnings: { label: "REVIEW WARNINGS FOUND", color: "text-amber-400" },
+    failed: { label: "LIKELY ISSUES FOUND", color: "text-red-400" },
   };
 
   const overall = overallStatusMap[report.status] || { label: report.status?.toUpperCase(), color: "text-[var(--text-muted)]" };
@@ -414,6 +519,9 @@ export default function ReportDetail({
     ? 1
     : 0;
   const testsGenerated = report.custom_tests?.length || 0;
+  const primaryIssue = buildPrimaryIssue(report, topFinding);
+  const prExplanation = buildPrExplanation(report);
+  const agentOverview = buildAgentOverview(report, isMosaic);
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto px-4 pb-8 pt-8">
@@ -486,7 +594,7 @@ export default function ReportDetail({
               <div className="grid grid-cols-1 xl:grid-cols-[1.35fr,1fr] gap-4">
                 <div className="surface-card-soft p-6">
                   <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                    Top Issue
+                    Main issue
                   </div>
                   <h3
                     className="mt-3 text-3xl font-semibold tracking-[-0.05em] text-[var(--text)]"
@@ -522,14 +630,14 @@ export default function ReportDetail({
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <SummaryTile
-                    label="Confirmed issues"
+                    label={isMosaic ? "Confirmed issues" : "Issues found"}
                     value={confirmedFindings}
                     detail={isMosaic ? "Findings MOSAIC kept after consensus." : "Issues highlighted in this report."}
                   />
                   <SummaryTile
-                    label="Verifier confirmed"
+                    label={isMosaic ? "Verifier confirmed" : "Review lanes clear"}
                     value={verifierConfirmed}
-                    detail={isMosaic ? "Findings the verifier backed." : "Checks that completed cleanly."}
+                    detail={isMosaic ? "Findings the verifier backed." : "AI review lanes that returned a clean result."}
                   />
                   <SummaryTile
                     label="PR readiness"
@@ -547,6 +655,60 @@ export default function ReportDetail({
                     value={testsGenerated}
                     detail="Custom regression tests created for this run."
                   />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr,0.95fr,1.1fr]">
+                <div className="surface-card p-5">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                    Likely Error
+                  </div>
+                  <h4 className="mt-3 text-lg font-semibold text-[var(--text)]">{primaryIssue.title}</h4>
+                  <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">{primaryIssue.summary}</p>
+                  <div className="mt-4 rounded-[18px] border border-[color:var(--border)] bg-[#05070b] p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                      What the app found
+                    </div>
+                    <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">{primaryIssue.detail}</p>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-3 text-[11px] font-mono text-[var(--text-muted)]">
+                    <span>Source: {primaryIssue.source}</span>
+                    {primaryIssue.location ? <span>File: {primaryIssue.location}</span> : null}
+                  </div>
+                </div>
+
+                <div className="surface-card p-5">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                    PR Status
+                  </div>
+                  <h4 className="mt-3 text-lg font-semibold text-[var(--text)]">{prExplanation.title}</h4>
+                  <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">{prExplanation.detail}</p>
+                  <div className="mt-4 rounded-[18px] border border-[color:var(--border)] bg-[var(--surface)] p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                      Simple rule
+                    </div>
+                    <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
+                      A PR is only enabled when the issue is strong enough and the app has a safe concrete patch to apply.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="surface-card p-5">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                    {agentOverview.title}
+                  </div>
+                  <h4 className="mt-3 text-lg font-semibold text-[var(--text)]">{agentOverview.summary}</h4>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {agentOverview.items.map((item) => (
+                      <span
+                        key={`${item.label}-${item.detail}`}
+                        className="rounded-full border border-[color:var(--border)] bg-[var(--surface)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-secondary)]"
+                        title={item.detail}
+                      >
+                        {item.label}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -599,7 +761,7 @@ export default function ReportDetail({
 
               <div>
                 <h3 className="mb-4 text-xs font-bold uppercase tracking-[0.2em] text-[var(--text-muted)]">
-                  Analysis Results
+                  Specialist Check Results
                 </h3>
 
                 {report.results?.length ? (

@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Test Lab Research Paper</title>
+    <style>
+      :root {
+        --ink: #16181d;
+        --muted: #5a6472;
+        --line: #d7dbe2;
+        --soft: #f4f6f9;
+        --accent: #0a7ea4;
+        --accent-soft: #eaf6fb;
+      }
+
+      @page {
+        size: A4;
+        margin: 18mm 16mm 18mm 16mm;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        font-family: "Georgia", "Times New Roman", serif;
+        background: white;
+        line-height: 1.58;
+      }
+
+      .paper {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 40px 32px 56px;
+      }
+
+      h1,
+      h2,
+      h3,
+      h4 {
+        font-family: "Helvetica Neue", Arial, sans-serif;
+        line-height: 1.18;
+        margin: 0;
+        color: #10131a;
+      }
+
+      h1 {
+        font-size: 2rem;
+        letter-spacing: -0.04em;
+      }
+
+      h2 {
+        margin-top: 28px;
+        font-size: 1.2rem;
+        letter-spacing: -0.03em;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 8px;
+      }
+
+      h3 {
+        margin-top: 18px;
+        font-size: 1rem;
+      }
+
+      p {
+        margin: 10px 0;
+        text-align: justify;
+      }
+
+      .hero {
+        border-bottom: 2px solid #10131a;
+        padding-bottom: 18px;
+        margin-bottom: 18px;
+      }
+
+      .subtitle {
+        margin-top: 12px;
+        color: var(--muted);
+        font-family: "Helvetica Neue", Arial, sans-serif;
+        font-size: 0.98rem;
+      }
+
+      .meta {
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .abstract,
+      .callout,
+      .table-wrap,
+      .diagram,
+      .contribution-box {
+        border: 1px solid var(--line);
+        background: white;
+        border-radius: 12px;
+      }
+
+      .abstract {
+        padding: 16px 18px;
+        margin: 20px 0 18px;
+      }
+
+      .abstract h2 {
+        margin-top: 0;
+        border-bottom: none;
+        padding-bottom: 0;
+        font-size: 1rem;
+      }
+
+      .keywords {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      .two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-top: 14px;
+      }
+
+      .callout {
+        padding: 14px 16px;
+        background: var(--soft);
+      }
+
+      .callout h3 {
+        margin-top: 0;
+        margin-bottom: 8px;
+      }
+
+      ul,
+      ol {
+        margin: 10px 0 10px 20px;
+      }
+
+      li {
+        margin: 6px 0;
+      }
+
+      .diagram {
+        padding: 18px;
+        margin-top: 16px;
+        background: linear-gradient(180deg, #ffffff, #f7fafc);
+      }
+
+      .diagram-title {
+        font-family: "Helvetica Neue", Arial, sans-serif;
+        font-weight: 700;
+        font-size: 0.98rem;
+        margin-bottom: 14px;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        align-items: stretch;
+      }
+
+      .flow-card {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: white;
+        padding: 12px;
+        min-height: 112px;
+      }
+
+      .flow-card strong {
+        display: block;
+        font-family: "Helvetica Neue", Arial, sans-serif;
+        margin-bottom: 8px;
+        color: #10131a;
+      }
+
+      .flow-card span {
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .contribution-box {
+        padding: 16px 18px;
+        margin-top: 14px;
+        background: var(--accent-soft);
+      }
+
+      .table-wrap {
+        overflow: hidden;
+        margin-top: 14px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.95rem;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 10px 12px;
+        vertical-align: top;
+      }
+
+      th {
+        text-align: left;
+        background: #f8fafc;
+        font-family: "Helvetica Neue", Arial, sans-serif;
+      }
+
+      tr:last-child td {
+        border-bottom: none;
+      }
+
+      .caption {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      .section-note {
+        color: var(--muted);
+        font-style: italic;
+      }
+
+      .refs {
+        font-size: 0.94rem;
+      }
+
+      .refs li {
+        margin-bottom: 10px;
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .small {
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+
+      @media print {
+        .paper {
+          max-width: none;
+          padding: 0;
+        }
+
+        a {
+          color: inherit;
+          text-decoration: none;
+        }
+      }
+
+      @media (max-width: 900px) {
+        .paper {
+          padding: 24px 20px 40px;
+        }
+
+        .two-col,
+        .flow {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="paper">
+      <section class="hero">
+        <h1>AI Test Lab and MOSAIC: A Multi-Agent Approach to Faster, More Actionable Software Testing</h1>
+        <div class="subtitle">
+          Research-style academic document prepared for project presentation and professor review
+        </div>
+        <div class="meta">
+          Project: AI Test Lab<br />
+          Framework: MOSAIC (Multi-agent Orchestrated Software Analysis with Inter-agent Consensus)<br />
+          Date: April 23, 2026
+        </div>
+      </section>
+
+      <section class="abstract">
+        <h2>Abstract</h2>
+        <p>
+          Software testing is one of the most important activities in software engineering because it reduces risk, improves reliability, and helps teams identify defects before deployment. In practice, however, modern testing is often fragmented across many tools and roles: developers write unit tests, quality teams run end-to-end scenarios, CI pipelines execute automated checks, and security teams add scanners or manual reviews. This fragmentation creates overhead in triage, explanation, test writing, patch preparation, and pull request packaging. AI Test Lab addresses this workflow problem by combining repository analysis, specialist-agent review, verifier-backed defect assessment, generated regression tests, proposed code fixes, and draft pull request preparation in a single interface. Its MOSAIC pipeline uses multiple specialist agents for distinct perspectives such as unit logic, black-box behavior, edge cases, security, white-box path reasoning, and performance, then applies a verifier and consensus stage before recommending code changes. The central claim of this document is not that AI Test Lab replaces conventional testing, but that it compresses the first-pass debugging and test-authoring loop into a faster, more explainable workflow. In that sense, the system is designed to save developer time by reducing context switching and manual synthesis while preserving safety through confidence thresholds and patch gating.
+        </p>
+        <div class="keywords">
+          <strong>Keywords:</strong> software testing, multi-agent systems, AI-assisted testing, regression testing, code review, developer productivity, pull request automation
+        </div>
+      </section>
+
+      <h2>1. Introduction</h2>
+      <p>
+        Software testing exists because software fails in ways that are expensive, risky, and difficult to diagnose after release. Even when teams follow good engineering practices, defects can still appear in logic, edge-case handling, security, and performance. Standards bodies treat testing as a structured engineering activity rather than an optional cleanup step. ISO/IEC/IEEE 29119 describes software testing as a process that applies across manual and automated work, dynamic testing, functional and non-functional testing, and multiple lifecycle models, while emphasizing a risk-based approach to prioritization [1]. In other words, testing is not just about running scripts; it is about deciding what matters most, validating those assumptions, and using evidence to reduce delivery risk.
+      </p>
+      <p>
+        In ordinary student and industry projects, the practical workflow is usually more chaotic than the standards suggest. Teams often use separate tools for unit tests, CI, static scanning, end-to-end checks, and pull request review. The result is that finding an issue is only the beginning. Someone still has to answer at least five follow-up questions: What exactly is wrong? Where is it? How serious is it? What test should be written? How should the fix be proposed and communicated? AI Test Lab was built around this gap. Instead of treating “testing” as only one command in CI, it treats testing as a broader decision-support process that includes defect identification, explanation, prioritization, regression prevention, and change packaging.
+      </p>
+
+      <h2>2. What Software Testing Is</h2>
+      <p>
+        At its simplest, software testing is the process of checking whether software behaves as expected under selected conditions. In practice, that simple definition expands into multiple testing levels and perspectives. Unit testing focuses on individual functions or classes. Component and integration testing examine how modules interact. End-to-end testing evaluates full workflows as a user would experience them. Security testing looks for weaknesses such as injection, exposure, broken validation, or unsafe defaults. Performance testing asks whether the code still behaves acceptably as workload or complexity increases.
+      </p>
+      <p>
+        The literature shows that even something as seemingly straightforward as unit testing is interpreted differently across organizations. Runeson’s survey of 19 companies found that there was broad agreement on the scope of unit testing, but important variation in goals and practices [2]. This matters because it shows that testing is not only a technical activity; it is also a workflow and quality-management choice. Teams may agree that testing is important, while still differing on who writes tests, how much isolation is needed, when tests run, and what evidence is considered sufficient.
+      </p>
+
+      <div class="two-col">
+        <div class="callout">
+          <h3>Core purposes of testing</h3>
+          <ul>
+            <li>Detect defects before release</li>
+            <li>Prevent regressions during code changes</li>
+            <li>Validate intended behavior and requirements</li>
+            <li>Reduce risk in security, correctness, and performance</li>
+            <li>Increase confidence before merge or deployment</li>
+          </ul>
+        </div>
+        <div class="callout">
+          <h3>Why testing still feels hard</h3>
+          <ul>
+            <li>It spans many tools and test levels</li>
+            <li>Failures can be noisy, flaky, or poorly explained</li>
+            <li>Coverage does not automatically mean correctness</li>
+            <li>Good tests still require domain understanding</li>
+            <li>Finding an issue is easier than fixing and packaging it</li>
+          </ul>
+        </div>
+      </div>
+
+      <h2>3. How People Commonly Do Testing Today</h2>
+      <p>
+        Current software teams typically combine several testing modes rather than relying on one. Frameworks such as <code>pytest</code> organize developer-written unit and functional tests, along with fixtures, assertions, and test selection conventions [3]. Continuous integration systems such as GitHub Actions run builds and tests on each push or pull request, which helps teams detect errors earlier and spend less time debugging large batches of changes [4]. Static analysis and code scanning add another layer by searching for vulnerabilities and coding errors before or alongside execution [5]. Security guidance from OWASP recommends using both automated security testing and manual expert testing, with automation embedded into build and deployment processes wherever possible [6]. For web applications, end-to-end and component testing tools such as Cypress help teams validate user-visible workflows and isolate component behavior, while also acknowledging that these tests are more difficult to set up and maintain than smaller isolated tests [7].
+      </p>
+      <p>
+        This tool ecosystem is powerful, but it has a coordination cost. A typical debugging cycle may require a developer to read CI output, open failing files, infer the real root cause, decide whether the problem is logic, edge-case handling, security, or performance, write or improve regression tests, modify code, rerun checks, and then write a pull request summary. Each step may use a different tool and a different mental model. The gap that AI Test Lab tries to close is therefore not “testing does not exist,” but rather “testing evidence is scattered and expensive to turn into action.”
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Current testing practice</th>
+              <th>Typical benefit</th>
+              <th>Typical friction</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Unit tests with frameworks such as <code>pytest</code></td>
+              <td>Fast feedback for isolated logic</td>
+              <td>Must still be written, maintained, and interpreted manually</td>
+            </tr>
+            <tr>
+              <td>CI workflows with GitHub Actions</td>
+              <td>Automatic execution on push and pull request</td>
+              <td>Logs can be noisy; failures still need human triage</td>
+            </tr>
+            <tr>
+              <td>Static and security scanning</td>
+              <td>Catches risks early without executing all code paths</td>
+              <td>False positives and prioritization overhead</td>
+            </tr>
+            <tr>
+              <td>End-to-end testing</td>
+              <td>Validates user-facing workflows</td>
+              <td>Heavier setup, longer runs, harder maintenance</td>
+            </tr>
+            <tr>
+              <td>Manual code review and debugging</td>
+              <td>Context-aware judgment</td>
+              <td>Slow, person-dependent, and not easily scalable</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="caption">
+        Table 1. Common testing practices are valuable individually, but they often leave teams with fragmented evidence and manual follow-up work.
+      </div>
+
+      <h2>4. AI-Assisted Testing Before AI Test Lab</h2>
+      <p>
+        Recent work has shown that large language models can contribute meaningfully to test generation and software development, but most systems still solve only one slice of the problem. Schäfer et al. evaluated LLMs for automated unit test generation and emphasized a central motivation that remains true today: unit tests are important, but writing them manually is laborious [8]. Meta’s TestGen-LLM moved the field closer to industrial use by automatically improving existing tests while filtering outputs for quality. Their reported results show why verification matters: generated tests may compile, run, and increase coverage at different rates, so automatic generation alone is not enough [9].
+      </p>
+      <p>
+        On the multi-agent side, ChatDev demonstrated that specialized agents can cooperate across design, coding, and testing through structured communication [10]. Fuzz4All showed that LLM-driven systems can also be highly effective in fuzzing-oriented testing, describing itself as a universal fuzzer and reporting 98 discovered bugs across nine systems under test [11]. These projects are important because they prove three things: specialization matters, automation can increase reach, and verification must accompany generation. However, they do not directly solve the exact workflow target of AI Test Lab, which is to help a developer quickly move from “something may be wrong in this repository” to “here is the likely issue, the rationale, a candidate fix, a regression test, and a safe path toward a pull request.”
+      </p>
+
+      <div class="contribution-box">
+        <h3>Positioning of AI Test Lab</h3>
+        <p>
+          AI Test Lab is not positioned as a replacement for <code>pytest</code>, CI, static analysis, or end-to-end testing. Instead, it acts as an orchestration layer that tries to reduce the manual work between defect suspicion and actionable engineering output.
+        </p>
+      </div>
+
+      <h2>5. The AI Test Lab / MOSAIC Approach</h2>
+      <p>
+        The system implemented in this project uses a research-style pipeline called MOSAIC: <em>Multi-agent Orchestrated Software Analysis with Inter-agent Consensus</em>. The key design idea is that different defect classes are easier to surface when different specialists look at the same code from different perspectives. Instead of relying on a single broad prompt, AI Test Lab assigns specialized roles for unit logic, black-box behavior, edge cases, security, white-box path analysis, and performance. These are followed by a verifier-like critic and a consensus stage before the interface allows PR-ready actions.
+      </p>
+
+      <div class="diagram">
+        <div class="diagram-title">Figure 1. High-level workflow of AI Test Lab</div>
+        <div class="flow">
+          <div class="flow-card">
+            <strong>1. Repository intake</strong>
+            <span>GitHub authentication, repository selection, branch context, source retrieval.</span>
+          </div>
+          <div class="flow-card">
+            <strong>2. Specialist analysis</strong>
+            <span>Six specialist agents inspect correctness, behavior, edge cases, security, paths, and performance.</span>
+          </div>
+          <div class="flow-card">
+            <strong>3. Verifier + consensus</strong>
+            <span>Claims are clustered, challenged, confirmed or rejected, and scored for confidence.</span>
+          </div>
+          <div class="flow-card">
+            <strong>4. Action packaging</strong>
+            <span>Top issue summary, generated tests, fix pack, PR preview, and AI chat for refinement.</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">
+        The system emphasizes explainability and safety. A pull request is only enabled when the issue is strong enough and a safe concrete patch exists.
+      </div>
+
+      <h3>5.1 Specialist-agent design</h3>
+      <p>
+        The current implementation uses six specialist agents:
+      </p>
+      <ul>
+        <li><strong>Unit agent:</strong> inspects function-level correctness and likely regressions.</li>
+        <li><strong>Black-box agent:</strong> reasons about inputs and outputs without relying only on implementation details.</li>
+        <li><strong>Edge-case agent:</strong> focuses on boundary conditions, empty inputs, unexpected states, and unusual paths.</li>
+        <li><strong>Security agent:</strong> searches for risky patterns such as unsafe execution, weak parsing, or insecure handling.</li>
+        <li><strong>White-box agent:</strong> inspects paths, branches, and control-flow behavior.</li>
+        <li><strong>Performance agent:</strong> flags inefficient structures and scaling risks.</li>
+      </ul>
+      <p>
+        After those agents produce claims, a critic/verifier checks whether a finding is plausible, confirmed, unverified, or rejected. A consensus stage then resolves whether the claim should survive into the final report. This matters because AI assistance is most useful when it explains why a finding deserves trust, not only when it produces more text.
+      </p>
+
+      <h3>5.2 Why the pull request can be unavailable</h3>
+      <p>
+        A core design decision in AI Test Lab is that automatic pull request creation is safety-gated. A finding may appear in the report and still remain “preview only” if the evidence is not strong enough or if a safe concrete patch was not generated. This is an intentional product choice. It is better for the system to say “I found a likely issue, but I am not confident enough to open a PR automatically” than to produce a misleading or risky branch.
+      </p>
+      <p>
+        In the current prototype, a PR-ready action requires four conditions:
+      </p>
+      <ol>
+        <li>The issue must survive the specialist-agent consensus step.</li>
+        <li>The verifier must support it strongly enough.</li>
+        <li>The confidence score must pass the threshold.</li>
+        <li>A concrete patch must be available, not just a review summary.</li>
+      </ol>
+      <p>
+        This gating mechanism is one of the main ways the system attempts to be safer than naive “auto-fix” experiences.
+      </p>
+
+      <h2>6. Why This Approach Can Be Better</h2>
+      <p>
+        AI Test Lab is better than a fragmented testing workflow in three practical ways. First, it reduces interpretation cost. Instead of forcing the user to combine CI output, scanner results, and manual notes, it attempts to surface the likely top issue directly. Second, it reduces mode-switching. The same run can produce an explanation, a fix idea, a regression test, and a PR preview. Third, it uses specialization and gating. The multi-agent design broadens the search space, while the verifier and confidence policy narrow what becomes actionable.
+      </p>
+      <p>
+        Importantly, “better” should be defined carefully. The project does not claim to outperform every conventional testing tool at every testing task. Rather, its advantage lies in workflow compression. It shortens the path from issue discovery to issue understanding and from issue understanding to proposed change. For student teams and fast-moving software teams, that kind of compression can be more valuable than any single gain in raw coverage or raw detection count.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>Traditional workflow</th>
+              <th>AI Test Lab workflow</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Understand the likely failure</td>
+              <td>Read logs, inspect files, infer likely root cause</td>
+              <td>Top issue is summarized directly in the report</td>
+            </tr>
+            <tr>
+              <td>Look across different defect types</td>
+              <td>Use separate tools or mental passes for logic, security, and edge cases</td>
+              <td>Specialist agents analyze these perspectives in parallel</td>
+            </tr>
+            <tr>
+              <td>Decide whether the result is trustworthy</td>
+              <td>Manual judgment plus secondary tools</td>
+              <td>Verifier and consensus stages provide structured trust signals</td>
+            </tr>
+            <tr>
+              <td>Write regression tests</td>
+              <td>Developer writes tests from scratch after diagnosis</td>
+              <td>System can propose custom regression tests in the same report</td>
+            </tr>
+            <tr>
+              <td>Prepare code change communication</td>
+              <td>Manual pull request writing and explanation</td>
+              <td>Draft PR preview is prepared when the patch is safe enough</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="caption">
+        Table 2. The main time-saving value of AI Test Lab is not a claim that testing disappears; it is that diagnosis, explanation, regression authoring, and PR preparation happen in one flow.
+      </div>
+
+      <h3>6.1 Where the time savings come from</h3>
+      <p>
+        The time-saving claim of this project should be interpreted as a workflow claim, not an unverified percentage claim. Based on the implemented feature set, AI Test Lab can save time in the following ways:
+      </p>
+      <ul>
+        <li><strong>Less context switching:</strong> the user does not need to move between separate tools just to form a first diagnosis.</li>
+        <li><strong>Faster first-pass triage:</strong> the report starts with the likely main issue instead of leaving the user to read every raw output stream.</li>
+        <li><strong>Reduced writing overhead:</strong> candidate tests, fixes, and PR text are generated from the same defect context.</li>
+        <li><strong>Better prioritization:</strong> the verifier and confidence score help distinguish stronger findings from weaker suspicions.</li>
+        <li><strong>Safer automation:</strong> preview-only gating prevents the system from auto-opening a PR when confidence is low or no patch exists.</li>
+      </ul>
+      <p>
+        For academic honesty, this should be framed as <em>expected developer time savings in early defect triage and remediation preparation</em>, not as a universal replacement for full validation.
+      </p>
+
+      <h2>7. Why AI Test Lab Is Distinct from Prior Work</h2>
+      <p>
+        Prior research has already shown that LLMs can generate tests, improve tests, coordinate multi-agent software tasks, and even fuzz complex systems. The distinctive contribution of AI Test Lab is the integration of these ideas into a single developer-facing workflow. It does not only generate tests. It does not only orchestrate agents. It does not only fuzz or review. Instead, it combines repository analysis, specialist perspectives, verifier-backed consensus, human-readable diagnosis, generated test artifacts, proposed code changes, and PR packaging in one product loop.
+      </p>
+      <p>
+        This integration focus is especially useful for educational and practical engineering settings. A professor or developer can understand the story of the tool in one sentence: <em>AI Test Lab tries to tell you what is wrong, why it matters, what test should exist, how it could be fixed, and whether it is safe to open a PR.</em> That end-to-end narrative is the project’s strongest advantage.
+      </p>
+
+      <h2>8. Limitations and Honest Boundaries</h2>
+      <p>
+        A research-style evaluation should also state the limitations clearly.
+      </p>
+      <ol>
+        <li>
+          <strong>The current prototype is strongest at AI-guided analysis and packaging, not at replacing native project execution.</strong>
+          For many repositories, the system currently behaves as an intelligent multi-perspective analysis layer rather than a full substitute for running the repository’s own complete test suite.
+        </li>
+        <li>
+          <strong>Automatic PR creation is intentionally conservative.</strong>
+          This improves safety, but also means users may sometimes see a useful report with no PR-ready action.
+        </li>
+        <li>
+          <strong>The benchmark scope is still limited.</strong>
+          The present prototype is Python-first and uses a curated benchmark harness. Broader language support and larger public evaluations would strengthen the research story.
+        </li>
+        <li>
+          <strong>Confidence scoring is helpful but not equivalent to ground truth.</strong>
+          It improves prioritization, but final engineering judgment remains necessary.
+        </li>
+      </ol>
+      <p>
+        These limitations are not weaknesses to hide; they are the basis for future work. The next major step would be integrating true repository-native test execution, real failure output capture, and richer coverage evidence into the same MOSAIC workflow.
+      </p>
+
+      <h2>9. Conclusion</h2>
+      <p>
+        Software testing remains essential because it reduces delivery risk and protects software quality. Modern teams already use many powerful testing practices, including unit testing, CI, code scanning, security testing, and end-to-end validation. The problem is not that testing is absent. The problem is that the evidence produced by those practices is often scattered and expensive to turn into action.
+      </p>
+      <p>
+        AI Test Lab addresses that workflow problem by combining specialist-agent analysis, verifier-backed consensus, generated fixes and tests, and draft PR preparation inside a single interface. Its MOSAIC pipeline is especially valuable because it uses different agents for different defect perspectives, then narrows actionability through confidence and verifier gating. That design makes the system more explainable and safer than a one-shot “auto-fix” approach. The most defensible claim for this project is therefore simple: AI Test Lab can save developer time by reducing context switching and shortening the path from defect suspicion to actionable engineering output.
+      </p>
+      <p>
+        In academic terms, the project demonstrates a credible direction for AI-assisted testing systems: not just generating tests, but orchestrating specialized reasoning, verification, explainability, and delivery artifacts in one coherent loop.
+      </p>
+
+      <h2>References</h2>
+      <ol class="refs">
+        <li>
+          ISO. <em>ISO/IEC/IEEE 29119-2:2013 Software and systems engineering — Software testing — Part 2: Test processes</em>. ISO standard page. Available at:
+          <a href="https://www.iso.org/standard/56736.html">https://www.iso.org/standard/56736.html</a>
+        </li>
+        <li>
+          Per Runeson. “A Survey of Unit Testing Practices.” <em>IEEE Software</em>, 23(4), 2006. Lund University entry:
+          <a href="https://portal.research.lu.se/en/publications/a-survey-of-unit-testing-practices/">https://portal.research.lu.se/en/publications/a-survey-of-unit-testing-practices/</a>
+        </li>
+        <li>
+          pytest documentation. “Full pytest documentation.”
+          <a href="https://docs.pytest.org/en/stable/contents.html">https://docs.pytest.org/en/stable/contents.html</a>
+        </li>
+        <li>
+          GitHub Docs. “Continuous integration.”
+          <a href="https://docs.github.com/en/actions/get-started/continuous-integration">https://docs.github.com/en/actions/get-started/continuous-integration</a>
+        </li>
+        <li>
+          GitHub Docs. “About code scanning.”
+          <a href="https://docs.github.com/en/code-security/concepts/code-scanning/about-code-scanning">https://docs.github.com/en/code-security/concepts/code-scanning/about-code-scanning</a>
+        </li>
+        <li>
+          OWASP Developer Guide. “Security Testing activity / Verification tools overview.”
+          <a href="https://devguide.owasp.org/en/06-verification/02-tools/">https://devguide.owasp.org/en/06-verification/02-tools/</a>
+        </li>
+        <li>
+          Cypress Documentation. “Testing Types.”
+          <a href="https://docs.cypress.io/app/core-concepts/testing-types">https://docs.cypress.io/app/core-concepts/testing-types</a>
+        </li>
+        <li>
+          Max Schäfer, Sarah Nadi, Aryaz Eghbali, and Frank Tip. “An Empirical Evaluation of Using Large Language Models for Automated Unit Test Generation.” arXiv:2302.06527.
+          <a href="https://arxiv.org/abs/2302.06527">https://arxiv.org/abs/2302.06527</a>
+        </li>
+        <li>
+          Nadia Alshahwan et al. “Automated Unit Test Improvement using Large Language Models at Meta.” FSE 2024 Industry Paper / UCL Discovery open version.
+          <a href="https://discovery.ucl.ac.uk/id/eprint/10199775/">https://discovery.ucl.ac.uk/id/eprint/10199775/</a>
+        </li>
+        <li>
+          Chen Qian et al. “ChatDev: Communicative Agents for Software Development.” arXiv:2307.07924.
+          <a href="https://arxiv.org/abs/2307.07924">https://arxiv.org/abs/2307.07924</a>
+        </li>
+        <li>
+          Chunqiu Steven Xia et al. “Fuzz4All: Universal Fuzzing with Large Language Models.” Project page and paper links.
+          <a href="https://fuzz4all.github.io/">https://fuzz4all.github.io/</a>
+        </li>
+      </ol>
+
+      <p class="small">
+        Authoring note: this document explains the current AI Test Lab prototype honestly. It argues that the system improves the testing workflow, especially issue triage and remediation preparation, while acknowledging that full native test execution integration remains future work.
+      </p>
+    </main>
+  </body>
+</html>
