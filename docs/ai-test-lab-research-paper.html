@@ -530,6 +530,92 @@
         For academic honesty, this should be framed as <em>expected developer time savings in early defect triage and remediation preparation</em>, not as a universal replacement for full validation.
       </p>
 
+      <h3>6.2 Illustrative benchmark comparison: single-pass baseline vs MOSAIC</h3>
+      <p>
+        To make the comparison more concrete, the current prototype includes a small Python benchmark corpus with four curated cases: three true-defect cases and one low-signal case. The same corpus can be processed in two ways. The first is the project’s simpler single-pass baseline mode, which resembles an ordinary one-shot review pass. The second is the MOSAIC multi-agent mode, which uses specialist agents, a verifier, and consensus. This comparison is useful because it shows not only whether the tool notices a problem, but also whether it suppresses weak findings and whether it produces deeper evidence around the same issue.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Benchmark case</th>
+              <th>Expected defect labels</th>
+              <th>Single-pass baseline</th>
+              <th>MOSAIC result</th>
+              <th>Interpretation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Bare-except integer parser</td>
+              <td><code>bare_except</code></td>
+              <td>1 finding surfaced</td>
+              <td>1 confirmed finding</td>
+              <td>Both modes detect the issue, but MOSAIC confirms it through three specialist perspectives.</td>
+            </tr>
+            <tr>
+              <td>Unsafe <code>eval</code> handler</td>
+              <td><code>dynamic_execution</code></td>
+              <td>1 finding surfaced</td>
+              <td>1 confirmed finding</td>
+              <td>Both modes identify the issue, but MOSAIC strengthens trust by combining security, black-box, and white-box evidence.</td>
+            </tr>
+            <tr>
+              <td>Low-signal utility module</td>
+              <td>none expected</td>
+              <td>1 weak fallback finding surfaced</td>
+              <td>0 consensus findings</td>
+              <td>MOSAIC avoids a low-signal false positive that the baseline still reports.</td>
+            </tr>
+            <tr>
+              <td>Zero-variance analytics helper</td>
+              <td><code>zero_variance_outlier</code></td>
+              <td>1 finding surfaced, PR-ready</td>
+              <td>1 confirmed finding, PR-ready</td>
+              <td>Both modes reach a useful action, but MOSAIC provides much richer justification for why the fix is safe enough.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="caption">
+        Table 3. Results from the current four-case benchmark corpus on April 23, 2026. In this corpus, the main gain from MOSAIC is improved precision and stronger explanation depth rather than a larger raw count of surfaced defects.
+      </div>
+      <p>
+        Across the four benchmark cases, the single-pass baseline surfaced four findings in total, including one low-signal finding on a case where no defect was expected. MOSAIC surfaced three consensus findings, all aligned with the three true-defect cases, and suppressed the low-signal case. In other words, the benchmark suggests that MOSAIC is not merely “finding more things”; it is finding more trustworthy things and filtering weak signals more effectively.
+      </p>
+
+      <h3>6.3 Evidence depth: why MOSAIC can feel stronger than a normal first-pass test review</h3>
+      <p>
+        A user may reasonably ask: if both modes can still report the same top defect, why is MOSAIC better? The answer is evidence depth. In a simple first-pass workflow, a developer often receives one output stream and one conclusion. In MOSAIC, the same underlying defect can be supported by multiple specialists, followed by verifier review and consensus resolution. This produces a richer chain of trust before the interface proposes code changes.
+      </p>
+      <div class="diagram">
+        <div class="diagram-title">Figure 2. Evidence depth on benchmark defect cases</div>
+        <div class="flow">
+          <div class="flow-card">
+            <strong>Bare except parser</strong>
+            <span>Single-pass baseline: 1 surfaced issue.<br /><br />MOSAIC: 3 supporting agents + verifier + consensus = 5 evidence layers.</span>
+          </div>
+          <div class="flow-card">
+            <strong>Unsafe eval handler</strong>
+            <span>Single-pass baseline: 1 surfaced issue.<br /><br />MOSAIC: 3 supporting agents + verifier + consensus = 5 evidence layers.</span>
+          </div>
+          <div class="flow-card">
+            <strong>Zero-variance metrics</strong>
+            <span>Single-pass baseline: 1 surfaced issue.<br /><br />MOSAIC: 4 supporting agents + verifier + consensus = 6 evidence layers.</span>
+          </div>
+          <div class="flow-card">
+            <strong>Low-signal utilities</strong>
+            <span>Single-pass baseline: 1 weak fallback issue.<br /><br />MOSAIC: 0 consensus findings, which prevents unnecessary escalation.</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">
+        Figure 2 shows why a multi-agent system can save time even when raw defect counts are similar: it reduces uncertainty, surfaces supporting rationale, and filters weak findings before the user writes tests or code changes.
+      </div>
+      <p>
+        This distinction is especially important for project demos and real engineering work. A baseline tool that finds “one problem” still leaves much of the reasoning burden on the developer. MOSAIC distributes that burden across specialist agents, then recombines the output into a structured decision. In practical terms, that means less time spent asking “is this really a bug?” and more time spent deciding “how should we fix and test it?”
+      </p>
+
       <h2>7. Why AI Test Lab Is Distinct from Prior Work</h2>
       <p>
         Prior research has already shown that LLMs can generate tests, improve tests, coordinate multi-agent software tasks, and even fuzz complex systems. The distinctive contribution of AI Test Lab is the integration of these ideas into a single developer-facing workflow. It does not only generate tests. It does not only orchestrate agents. It does not only fuzz or review. Instead, it combines repository analysis, specialist perspectives, verifier-backed consensus, human-readable diagnosis, generated test artifacts, proposed code changes, and PR packaging in one product loop.
